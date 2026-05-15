@@ -184,14 +184,19 @@ function handleInviteFileAction(args, originalFunction) {
 }
 
 function patchMessageHandlers(): void {
-  webhookLog("patchMessageHandlers called", {
-    MessageHandlersKeys: MessageHandlers ? Object.keys(MessageHandlers) : null,
-    allMethods: MessageHandlers 
-      ? Object.keys(MessageHandlers).filter(k => typeof MessageHandlers[k] === "function")
-      : null,
-  });
+  // Force MessagesHandlers to instantiate so _handlers is set
+  // before we register patches, otherwise they sit in pendingPatches forever
+  try {
+    const { MessagesHandlers } = findByProps("MessagesHandlers");
+    const temp = new MessagesHandlers();
+    temp?.params; // triggers the getter which calls patchHandlers()
+    webhookLog("forced MessagesHandlers params getter", { 
+      tempKeys: temp ? Object.keys(temp) : null 
+    });
+  } catch (e) {
+    webhookLog("force MessagesHandlers FAILED", { error: String(e) });
+  }
 
-  // Only patch the two we know about, just to confirm they're NOT firing
   const unpatchTap = MessageHandlers.patchInstead("handleTapInviteEmbed", (args, orig) => {
     webhookLog("handleTapInviteEmbed FIRED", {});
     return handleInviteFileAction(args, orig);
@@ -203,6 +208,7 @@ function patchMessageHandlers(): void {
   });
 
   patches.push(unpatchTap, unpatchAccept);
+  webhookLog("patchMessageHandlers done", {});
 }
 
 function patchRowManager(): void {
