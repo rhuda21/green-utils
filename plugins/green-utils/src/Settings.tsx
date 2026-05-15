@@ -6,7 +6,7 @@ import { Forms } from "@vendetta/ui/components";
 const { ScrollView, Text, View, Switch, StyleSheet, TouchableOpacity, Alert } = ReactNative;
 const { FormInput } = Forms;
 
-const GuildStore   = findByStoreName("GuildStore");
+const GuildStore = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
 
 interface PluginStorage {
@@ -26,21 +26,36 @@ function simpleHash(str: string): string {
 }
 
 const s = StyleSheet.create({
-  page:         { flex: 1, backgroundColor: "#1e1f22", padding: 16 },
-  header:       { color: "#f2f3f5", fontSize: 22, fontWeight: "700", marginBottom: 4 },
-  subheader:    { color: "#949ba4", fontSize: 13, marginBottom: 20 },
-  sectionHead:  { color: "#949ba4", fontSize: 11, fontWeight: "700", letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 8, marginTop: 12 },
-  card:         { backgroundColor: "#2b2d31", borderRadius: 12, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: "#35373c" },
-  grid:         { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
-  chip:         { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#313338", borderRadius: 8, borderWidth: 1, borderColor: "#3f4147" },
-  chipSelected: { backgroundColor: "#5865f2", borderColor: "#5865f2" },
-  chipText:     { color: "#b5bac1", fontSize: 13, fontWeight: "600" },
-  chipTextSel:  { color: "#ffffff" },
-  row:          { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10 },
-  divider:      { height: 1, backgroundColor: "#3f4147", marginVertical: 12 },
-  btnSave:      { backgroundColor: "#248046", borderRadius: 8, paddingVertical: 12, alignItems: "center", marginTop: 8 },
-  btnSaveText:  { color: "#fff", fontWeight: "600", fontSize: 14 },
-  dangerText:   { color: "#f23f43", fontSize: 12, fontWeight: "600" }
+  page: { flex: 1, backgroundColor: "#1e1f22" },
+  scrollContent: { padding: 16, paddingBottom: 60 },
+  headerContainer: { marginBottom: 20 },
+  header: { color: "#f2f3f5", fontSize: 24, fontWeight: "800", letterSpacing: 0.5 },
+  subheader: { color: "#949ba4", fontSize: 13, marginTop: 4 },
+  sectionHead: { color: "#949ba4", fontSize: 12, fontWeight: "700", letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 10, marginTop: 16 },
+  listCard: { backgroundColor: "#2b2d31", borderRadius: 12, borderWidth: 1, borderColor: "#35373c", overflow: "hidden" },
+  guildRow: { flexDirection: "row", alignItems: "center", padding: 14 },
+  guildRowActive: { backgroundColor: "#35373c" },
+  guildRowDivider: { height: 1, backgroundColor: "#3f4147" },
+  guildIndicator: { width: 4, height: 24, borderRadius: 2, marginRight: 12, backgroundColor: "transparent" },
+  guildIndicatorActive: { backgroundColor: "#5865f2" },
+  guildName: { color: "#dbdee1", fontSize: 16, fontWeight: "500", flex: 1 },
+  guildNameActive: { color: "#ffffff", fontWeight: "700" },
+  mainCard: { backgroundColor: "#2b2d31", borderRadius: 12, padding: 16, borderWidth: 1, borderColor: "#35373c" },
+  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  rowTextContainer: { flex: 1, marginRight: 16 },
+  rowTitle: { color: "#f2f3f5", fontSize: 16, fontWeight: "600" },
+  rowSubtext: { color: "#949ba4", fontSize: 12, marginTop: 4, lineHeight: 16 },
+  divider: { height: 1, backgroundColor: "#3f4147", marginVertical: 16 },
+  inputWrapper: { backgroundColor: "#1e1f22", borderRadius: 8, padding: 4, marginBottom: 16 },
+  channelListHead: { color: "#f2f3f5", fontSize: 14, fontWeight: "700", marginBottom: 12 },
+  channelItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12 },
+  channelDivider: { height: 1, backgroundColor: "#35373c" },
+  channelLeft: { flexDirection: "row", alignItems: "center", flex: 1, marginRight: 16 },
+  channelHash: { color: "#80848e", fontSize: 16, marginRight: 8, fontWeight: "600" },
+  channelHashLocked: { color: "#f23f43" },
+  channelName: { color: "#dbdee1", fontSize: 15, fontWeight: "500" },
+  channelNameLocked: { color: "#f23f43", fontWeight: "600" },
+  noChannels: { color: "#949ba4", fontSize: 13, textAlign: "center", paddingVertical: 16, fontStyle: "italic" }
 });
 
 export default function Settings() {
@@ -50,9 +65,23 @@ export default function Settings() {
   const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
 
   const activeChannels = React.useMemo(() => {
-    if (!selectedGuildId || !ChannelStore?.getMutableGuildChannelsAll) return [];
-    const allChannels = Object.values(ChannelStore.getMutableGuildChannelsAll());
-    return allChannels.filter((c: any) => c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
+    if (!selectedGuildId) return [];
+    
+    const getChannelsModule = findByProps("getChannels") || findByProps("getGuildChannels");
+    if (getChannelsModule) {
+      const channelData = getChannelsModule.getChannels?.(selectedGuildId) || getChannelsModule.getGuildChannels?.(selectedGuildId);
+      if (channelData && typeof channelData === "object") {
+        const list = Array.isArray(channelData) ? channelData : Object.values(channelData);
+        return list.filter((c: any) => c && (c.type === 0 || c.type === 2));
+      }
+    }
+
+    if (ChannelStore?.getMutableGuildChannelsAll) {
+      const allChannels = Object.values(ChannelStore.getMutableGuildChannelsAll());
+      return allChannels.filter((c: any) => c && c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
+    }
+
+    return [];
   }, [selectedGuildId]);
 
   const isImageBlocked = !!pluginStorage.imageBlockList[selectedGuildId];
@@ -69,108 +98,108 @@ export default function Settings() {
       forceUpdate();
     } else {
       if (!passwordInput.trim()) {
-        Alert.alert("Password Required", "Please enter an access key in the field below before checking this option.");
+        Alert.alert("Password Required", "Please enter a password before locking this channel.");
         return;
       }
       pluginStorage.channelLockList[channelId] = true;
       pluginStorage.channelPasswords[channelId] = simpleHash(passwordInput);
       setPasswordInput("");
       forceUpdate();
-      Alert.alert("Success", "Channel lock rule applied safely.");
     }
   }
 
   return (
-    <ScrollView style={s.page} contentContainerStyle={{ paddingBottom: 60 }}>
-      <Text style={s.header}>ServerGuard Dashboard</Text>
-      <Text style={s.subheader}>Select a server below to customize active moderation security blocks.</Text>
+    <ScrollView style={s.page} contentContainerStyle={s.scrollContent}>
+      <View style={s.headerContainer}>
+        <Text style={s.header}>greenUtils</Text>
+        <Text style={s.subheader}>Select a server from the list below to configure security overrides.</Text>
+      </View>
 
-      <Text style={s.sectionHead}>1. Select Target Guild</Text>
-      <View style={s.grid}>
-        {guilds.map((g) => {
+      <Text style={s.sectionHead}>Select Server</Text>
+      <View style={s.listCard}>
+        {guilds.map((g, idx) => {
           const isSelected = selectedGuildId === g.id;
           return (
-            <TouchableOpacity 
-              key={g.id} 
-              style={[s.chip, isSelected && s.chipSelected]} 
-              onPress={() => setSelectedGuildId(g.id)}
-            >
-              <Text style={[s.chipText, isSelected && s.chipTextSel]}>
-                {g.name}
-              </Text>
-            </TouchableOpacity>
+            <View key={g.id}>
+              <TouchableOpacity 
+                activeOpacity={0.7}
+                style={[s.guildRow, isSelected && s.guildRowActive]} 
+                onPress={() => setSelectedGuildId(g.id)}
+              >
+                <View style={[s.guildIndicator, isSelected && s.guildIndicatorActive]} />
+                <Text style={[s.guildName, isSelected && s.guildNameActive]}>
+                  {g.name}
+                </Text>
+              </TouchableOpacity>
+              {idx !== guilds.length - 1 && <View style={s.guildRowDivider} />}
+            </View>
           );
         })}
       </View>
 
-      {selectedGuildId ? (
+      {selectedGuildId && (
         <>
-          <Text style={s.sectionHead}>2. Server Media Rules</Text>
-          <View style={s.card}>
+          <Text style={s.sectionHead}>Settings Matrix</Text>
+          <View style={s.mainCard}>
             <View style={s.row}>
-              <View style={{ flex: 1, marginRight: 8 }}>
-                <Text style={{ color: "#f2f3f5", fontSize: 15, fontWeight: "600" }}>Block Server Images</Text>
-                <Text style={{ color: "#949ba4", fontSize: 12, marginTop: 2 }}>
-                  Forces media attachments and link embeds into tap-to-reveal blurs across this entire server.
+              <View style={s.rowTextContainer}>
+                <Text style={s.rowTitle}>Block Server Images</Text>
+                <Text style={s.rowSubtext}>
+                  Hide all media attachments and embeds behind blur flags across this specific server context.
                 </Text>
               </View>
               <Switch 
                 value={isImageBlocked} 
                 onValueChange={toggleImageBlocking}
                 trackColor={{ false: "#4e5058", true: "#5865f2" }}
+                thumbColor="#ffffff"
               />
             </View>
-          </View>
 
-          <Text style={s.sectionHead}>3. Channel Access Control</Text>
-          <View style={s.card}>
-            <View style={{ marginBottom: 14 }}>
+            <View style={s.divider} />
+
+            <Text style={s.channelListHead}>Channel Privacy Blocks</Text>
+            
+            <View style={s.inputWrapper}>
               <FormInput
-                title="SHARED PROTECTION PASSWORD"
-                placeholder="Type a password here first, then tap a channel below to lock it..."
+                title="LOCK PROTECTION PASSWORD"
+                placeholder="Type password key, then toggle a channel switch below..."
                 secureTextEntry={true}
                 value={passwordInput}
                 onChange={(v: string) => setPasswordInput(v)}
               />
             </View>
 
-            <View style={s.divider} />
-
             {activeChannels.length === 0 ? (
-              <Text style={{ color: "#949ba4", fontSize: 13, textAlign: "center", paddingVertical: 10 }}>
-                No standard text/voice channels mapped in this environment context.
-              </Text>
+              <Text style={s.noChannels}>No supported text or voice channels inside this guild environment.</Text>
             ) : (
               activeChannels.map((ch: any, idx) => {
                 const isLocked = !!pluginStorage.channelLockList[ch.id];
                 return (
                   <View key={ch.id}>
-                    <View style={s.row}>
-                      <View>
-                        <Text style={{ color: isLocked ? "#f23f43" : "#f2f3f5", fontSize: 14, fontWeight: "500" }}>
-                          {isLocked ? `🔒 #${ch.name}` : `#${ch.name}`}
+                    <View style={s.channelItem}>
+                      <View style={s.channelLeft}>
+                        <Text style={[s.channelHash, isLocked && s.channelHashLocked]}>
+                          {isLocked ? "🔒" : "#"}
                         </Text>
-                        <Text style={{ color: "#949ba4", fontSize: 11, marginTop: 1 }}>
-                          {isLocked ? "Credentials validation required" : "Unrestricted public access flow"}
+                        <Text style={[s.channelName, isLocked && s.channelNameLocked]}>
+                          {ch.name}
                         </Text>
                       </View>
                       <Switch
                         value={isLocked}
                         onValueChange={() => handleChannelToggle(ch.id, isLocked)}
                         trackColor={{ false: "#4e5058", true: "#f23f43" }}
+                        thumbColor="#ffffff"
                       />
                     </View>
-                    {idx !== activeChannels.length - 1 && <View style={{ height: 1, backgroundColor: "#35373c", marginVertical: 4 }} />}
+                    {idx !== activeChannels.length - 1 && <View style={s.channelDivider} />}
                   </View>
                 );
               })
             )}
           </View>
         </>
-      ) : (
-        <Text style={{ color: "#949ba4", fontSize: 14, textAlign: "center", marginTop: 20 }}>
-          Please connect to or select a server to initialize config matrices.
-        </Text>
       )}
     </ScrollView>
   );
