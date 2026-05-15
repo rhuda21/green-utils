@@ -16,7 +16,6 @@ interface PluginStorage {
 
 const pluginStorage = storage as unknown as PluginStorage;
 
-// Set up clean fallbacks for our revised feature properties
 pluginStorage.imageBlockList           ??= {};
 pluginStorage.serverPasswords          ??= {};
 pluginStorage.serverLockList           ??= {};
@@ -72,35 +71,55 @@ export default function Settings() {
     forceUpdate();
   }
 
-  function handleServerLockToggle(guildId: string, isCurrentlyLocked: boolean) {
-    if (isCurrentlyLocked) {
+  function handleServerLockToggle(guildId: string, turnOn: boolean) {
+    if (!turnOn) {
       delete pluginStorage.serverLockList[guildId];
       delete pluginStorage.serverPasswords[guildId];
       forceUpdate();
     } else {
-      const targetAlert = alerts?.showInputAlert || (Alert as any).prompt;
+      const customAlert = alerts?.showInputAlert;
 
-      if (!targetAlert) {
-        Alert.alert("Error", "No secure input API detected on this device configuration.");
-        return;
-      }
-
-      targetAlert({
-        title: "Create Server Lock",
-        placeholder: "Set protection master key...",
-        secureTextEntry: true,
-        confirmText: "Lock Entire Server",
-        cancelText: "Cancel",
-        onConfirm: (input: string) => {
-          if (!input || !input.trim()) {
-            Alert.alert("Failed", "Master password cannot be left blank.");
-            return;
+      if (customAlert) {
+        customAlert({
+          title: "Create Server Lock",
+          placeholder: "Set protection master key...",
+          secureTextEntry: true,
+          confirmText: "Lock Entire Server",
+          cancelText: "Cancel",
+          onConfirm: (input: string) => {
+            if (!input || !input.trim()) {
+              Alert.alert("Failed", "Master password cannot be left blank.");
+              return;
+            }
+            pluginStorage.serverLockList[guildId] = true;
+            pluginStorage.serverPasswords[guildId] = simpleHash(input);
+            forceUpdate();
           }
-          pluginStorage.serverLockList[guildId] = true;
-          pluginStorage.serverPasswords[guildId] = simpleHash(input);
-          forceUpdate();
-        }
-      });
+        });
+      } else if ((Alert as any).prompt) {
+        (Alert as any).prompt(
+          "Create Server Lock",
+          "Set protection master key:",
+          [
+            { text: "Cancel" },
+            {
+              text: "Lock Entire Server",
+              onPress: (input?: string) => {
+                if (!input || !input.trim()) {
+                  Alert.alert("Failed", "Master password cannot be left blank.");
+                  return;
+                }
+                pluginStorage.serverLockList[guildId] = true;
+                pluginStorage.serverPasswords[guildId] = simpleHash(input);
+                forceUpdate();
+              }
+            }
+          ],
+          "secure-text"
+        );
+      } else {
+        Alert.alert("Error", "No secure input API detected on this client build.");
+      }
     }
   }
 
@@ -138,7 +157,6 @@ export default function Settings() {
           <Text style={s.sectionHead}>Security Configuration Matrix</Text>
           <View style={s.mainCard}>
             
-            {/* Global/Server Layout Lock Toggle */}
             <View style={s.row}>
               <View style={s.rowTextContainer}>
                 <Text style={s.rowTitle}>Lock Server Infrastructure</Text>
@@ -148,7 +166,7 @@ export default function Settings() {
               </View>
               <Switch 
                 value={isServerLocked} 
-                onValueChange={() => handleServerLockToggle(selectedGuildId, isServerLocked)}
+                onValueChange={(nextValue) => handleServerLockToggle(selectedGuildId, nextValue)}
                 trackColor={{ false: "#4e5058", true: "#f23f43" }}
                 thumbColor="#ffffff"
               />
@@ -156,7 +174,6 @@ export default function Settings() {
 
             <View style={s.divider} />
 
-            {/* Server Media Blocking Toggle */}
             <View style={s.row}>
               <View style={s.rowTextContainer}>
                 <Text style={s.rowTitle}>Block Server Images</Text>
@@ -174,12 +191,11 @@ export default function Settings() {
 
             <View style={s.divider} />
 
-            {/* Optional Password Requirement for Blocked Image Previews */}
             <View style={s.row}>
               <View style={s.rowTextContainer}>
                 <Text style={s.rowTitle}>Require Password for Image Previews</Text>
                 <Text style={s.rowSubtext}>
-                  When enabled,viewing filtered image assets will prompt for your server lock password instead of automatically revealing them.
+                  When enabled, viewing filtered image assets will prompt for your server lock password instead of automatically revealing them.
                 </Text>
               </View>
               <Switch 
