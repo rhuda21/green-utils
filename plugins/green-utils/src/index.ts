@@ -2,6 +2,7 @@ import { instead, after } from "@vendetta/patcher";
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
+import { webhookLog } from "./utils/debug";
 import Settings from "./Settings";
 import MessageHandlers from "./utils/MessageHandlersPatcher";
 
@@ -21,22 +22,37 @@ pluginStorage.serverPasswords          ??= {};
 pluginStorage.serverLockList           ??= {};
 pluginStorage.imageLockRequirePassword ??= false;
 
-// Discord Core Stores
 const SelectedGuildStore = findByStoreName("SelectedGuildStore") || findByProps("getGuildId", "getLastSelectedGuildId");
 const ThemeStore = findByStoreName("ThemeStore");
-
-// Discord Core Modules & View Components
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const RowManager = findByName("RowManager");
 const getEmbedThemeColors = findByName("getEmbedThemeColors");
 const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExtendedType ?? { EMBEDDED_ACTIVITY_INVITE: 3 };
 
+webhookLog("module init", {
+  hasSelectedGuildStore: !!SelectedGuildStore,
+  hasThemeStore: !!ThemeStore,
+  hasChannelView: !!ChannelView,
+  channelViewKeys: ChannelView ? Object.keys(ChannelView) : null,
+  hasRowManager: !!RowManager,
+  hasRowManagerPrototype: !!RowManager?.prototype,
+  hasGetEmbedThemeColors: !!getEmbedThemeColors,
+  CodedLinkExtendedType,
+  storage: {
+    imageBlockList: pluginStorage.imageBlockList,
+    serverLockList: pluginStorage.serverLockList,
+    imageLockRequirePassword: pluginStorage.imageLockRequirePassword,
+    serverPasswordKeys: Object.keys(pluginStorage.serverPasswords),
+  }
+});
+
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
 const unlockedImagesForGuild = new Set<string>();
 
-// Dynamic trigger to invoke the custom alert overlay inside our global scope
-let triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {};
+let triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {
+  webhookLog("triggerMediaPrompt called but still NO-OP", { guildId });
+};
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -88,13 +104,41 @@ function makeRPL(attachment, shouldObscure: boolean) {
 
 function handleInviteFileAction(args, originalFunction) {
   const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-  
+
+  webhookLog("handleInviteFileAction entered", {
+    guildId,
+    argsLength: args?.length,
+    arg0Keys: args?.[0] ? Object.keys(args[0]) : null,
+    arg1Keys: args?.[1] ? Object.keys(args[1]) : null,
+    arg0HasNativeEvent: !!args?.[0]?.nativeEvent,
+    arg0NativeEventKeys: args?.[0]?.nativeEvent ? Object.keys(args[0].nativeEvent) : null,
+  });
+
+  webhookLog("storage state at tap", {
+    blocked: pluginStorage.imageBlockList[guildId],
+    requirePw: pluginStorage.imageLockRequirePassword,
+    unlocked: unlockedImagesForGuild.has(guildId),
+    allBlockedGuilds: Object.keys(pluginStorage.imageBlockList),
+  });
+
   let targetEventData = args?.[0]?.nativeEvent ?? args?.[0];
   if (!targetEventData?.codedLink && args?.[1]?.codedLink) {
     targetEventData = args[1];
   }
 
+  webhookLog("targetEventData resolved", {
+    hasCodedLink: !!targetEventData?.codedLink,
+    targetKeys: targetEventData ? Object.keys(targetEventData) : null,
+    codedLinkKeys: targetEventData?.codedLink ? Object.keys(targetEventData.codedLink) : null,
+    hasRawAttachment: !!targetEventData?.codedLink?.rawAttachment,
+    extendedType: targetEventData?.codedLink?.extendedType,
+  });
+
   const executeOriginal = () => {
+    webhookLog("executeOriginal called", {
+      hasRawAttachment: !!targetEventData?.codedLink?.rawAttachment,
+      rawAttachmentFilename: targetEventData?.codedLink?.rawAttachment?.filename ?? null,
+    });
     if (targetEventData && targetEventData.codedLink?.rawAttachment) {
       targetEventData.message ??= {};
       targetEventData.message.attachments = [targetEventData.codedLink.rawAttachment];
@@ -102,41 +146,96 @@ function handleInviteFileAction(args, originalFunction) {
     return originalFunction(...args);
   };
 
-  if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-    // Invoke our own custom React dialog sequence instead of Discord's native alert method
+  const shouldPrompt = !!(
+    guildId &&
+    pluginStorage.imageBlockList[guildId] &&
+    pluginStorage.imageLockRequirePassword &&
+    !unlockedImagesForGuild.has(guildId)
+  );
+
+  webhookLog("prompt gate check", {
+    shouldPrompt,
+    guildId: !!guildId,
+    inBlockList: !!pluginStorage.imageBlockList[guildId],
+    requirePw: !!pluginStorage.imageLockRequirePassword,
+    notYetUnlocked: !unlockedImagesForGuild.has(guildId),
+  });
+
+  if (shouldPrompt) {
+    webhookLog("calling triggerMediaPrompt", { guildId });
     triggerMediaPrompt(guildId, () => {
+      webhookLog("prompt success callback fired", { guildId });
       executeOriginal();
     });
     return null;
   }
 
+  webhookLog("fell through — skipping prompt", {
+    reason: !guildId
+      ? "no guildId"
+      : !pluginStorage.imageBlockList[guildId]
+      ? "not in blocklist"
+      : !pluginStorage.imageLockRequirePassword
+      ? "requirePassword is false"
+      : "already unlocked",
+  });
+
   return executeOriginal();
 }
 
 function patchMessageHandlers(): void {
+  webhookLog("patchMessageHandlers called", {
+    MessageHandlersExists: !!MessageHandlers,
+    MessageHandlersKeys: MessageHandlers ? Object.keys(MessageHandlers) : null,
+  });
+
   const unpatchTap = MessageHandlers.patchInstead("handleTapInviteEmbed", handleInviteFileAction);
+  webhookLog("patched handleTapInviteEmbed", { success: !!unpatchTap });
+
   const unpatchAccept = MessageHandlers.patchInstead("handleTapInviteEmbedAccept", handleInviteFileAction);
+  webhookLog("patched handleTapInviteEmbedAccept", { success: !!unpatchAccept });
+
   patches.push(unpatchTap, unpatchAccept);
 }
 
 function patchRowManager(): void {
-  if (!RowManager?.prototype) return;
-  
+  webhookLog("patchRowManager called", {
+    hasRowManager: !!RowManager,
+    hasPrototype: !!RowManager?.prototype,
+    protoKeys: RowManager?.prototype ? Object.keys(RowManager.prototype) : null,
+  });
+
+  if (!RowManager?.prototype) {
+    webhookLog("patchRowManager BAILED — no prototype", {});
+    return;
+  }
+
   const unpatchRow = after("generate", RowManager.prototype, (_, row) => {
     const { message } = row;
+
     if (!message?.attachments?.length) return;
 
     const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-    let shouldObscure = false;
 
+    webhookLog("RowManager.generate fired", {
+      guildId,
+      attachmentCount: message.attachments.length,
+      attachmentFilenames: message.attachments.map((a) => a.filename),
+      inBlockList: !!pluginStorage.imageBlockList[guildId],
+      requirePw: pluginStorage.imageLockRequirePassword,
+      alreadyUnlocked: unlockedImagesForGuild.has(guildId),
+    });
+
+    let shouldObscure = false;
     if (guildId && pluginStorage.imageBlockList[guildId]) {
       if (!pluginStorage.imageLockRequirePassword || !unlockedImagesForGuild.has(guildId)) {
         shouldObscure = true;
       }
     }
 
+    webhookLog("RowManager shouldObscure", { shouldObscure });
+
     let rpls: any[] = [];
-    
     message.attachments.forEach((attachment) => {
       rpls.push(makeRPL(attachment, shouldObscure));
     });
@@ -144,34 +243,52 @@ function patchRowManager(): void {
     if (rpls.length) {
       if (!message.codedLinks?.length) message.codedLinks = [];
       message.codedLinks.push(...rpls);
-      message.attachments = []; 
+      message.attachments = [];
+      webhookLog("RowManager RPLs injected", { rplCount: rpls.length });
     }
   });
+
   patches.push(unpatchRow);
 }
 
 let forceUpdateChat = () => {};
 
-// Global Layout Mount component to inject custom React dialog layers cleanly into the interface loop
 function initializeChannelLockPatch(): void {
-  if (!ChannelView) return;
+  webhookLog("initializeChannelLockPatch called", {
+    hasChannelView: !!ChannelView,
+    channelViewKeys: ChannelView ? Object.keys(ChannelView) : null,
+  });
+
+  if (!ChannelView) {
+    webhookLog("initializeChannelLockPatch BAILED — no ChannelView", {});
+    return;
+  }
+
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
+  webhookLog("initializeChannelLockPatch targetMethod", { targetMethod });
 
   const unpatchLock = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
     const currentGuildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
 
-    // 1. Handle Server Lock Gateway Screen
+    webhookLog("ChannelView render", {
+      currentGuildId,
+      isServerLocked: !!pluginStorage.serverLockList[currentGuildId],
+      isGuildUnlocked: unlockedGuilds.has(currentGuildId),
+    });
+
     if (currentGuildId && pluginStorage.serverLockList[currentGuildId] && !unlockedGuilds.has(currentGuildId)) {
+      webhookLog("rendering LockScreen", { currentGuildId });
       return React.createElement(LockScreen, {
         guildId: currentGuildId,
         onUnlockCompleted: () => {
           unlockedGuilds.add(currentGuildId);
+          webhookLog("LockScreen onUnlockCompleted fired", { currentGuildId });
           forceUpdateChat();
         }
       });
     }
 
-    // 2. Render normal layout chat viewport accompanied by our custom reactive password input dialog
+    webhookLog("rendering normal chat + CustomPromptDialog", { currentGuildId });
     return React.createElement(
       React.Fragment,
       null,
@@ -179,6 +296,7 @@ function initializeChannelLockPatch(): void {
       React.createElement(CustomPromptDialog)
     );
   });
+
   patches.push(unpatchLock);
 }
 
@@ -189,22 +307,46 @@ function CustomPromptDialog() {
   const successCallback = React.useRef<() => void>(() => {});
 
   React.useEffect(() => {
+    webhookLog("CustomPromptDialog mounted — registering triggerMediaPrompt", {});
     triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {
+      webhookLog("triggerMediaPrompt REAL called", { guildId });
       currentTargetGid.current = guildId;
       successCallback.current = onSuccess;
       setPassword("");
       setVisible(true);
     };
+
+    return () => {
+      webhookLog("CustomPromptDialog unmounted — triggerMediaPrompt going back to no-op", {});
+      triggerMediaPrompt = (guildId) => {
+        webhookLog("triggerMediaPrompt called but dialog UNMOUNTED", { guildId });
+      };
+    };
   }, []);
+
+  React.useEffect(() => {
+    webhookLog("CustomPromptDialog visible changed", { visible });
+  }, [visible]);
 
   function handleSubmit() {
     const storedHash = pluginStorage.serverPasswords[currentTargetGid.current];
-    if (simpleHash(password ?? "") === storedHash) {
+    const inputHash = simpleHash(password ?? "");
+
+    webhookLog("handleSubmit", {
+      guildId: currentTargetGid.current,
+      inputHash,
+      storedHash,
+      match: inputHash === storedHash,
+    });
+
+    if (inputHash === storedHash) {
       unlockedImagesForGuild.add(currentTargetGid.current);
       setVisible(false);
       successCallback.current();
       forceUpdateChat();
+      webhookLog("handleSubmit success — guild image unlocked", { guildId: currentTargetGid.current });
     } else {
+      webhookLog("handleSubmit FAIL — wrong password", {});
       Alert.alert("Error", "Invalid Password");
     }
   }
@@ -248,9 +390,13 @@ function CustomPromptDialog() {
 
 function LockScreen({ guildId, onUnlockCompleted }: any) {
   const [, forceComponentUpdate] = React.useReducer((x) => x + 1, 0);
-  
+
   React.useEffect(() => {
+    webhookLog("LockScreen mounted", { guildId });
     forceUpdateChat = forceComponentUpdate;
+    return () => {
+      webhookLog("LockScreen unmounted", { guildId });
+    };
   }, []);
 
   const styles = StyleSheet.create({
@@ -271,6 +417,7 @@ function LockScreen({ guildId, onUnlockCompleted }: any) {
       TouchableOpacity, {
         style: styles.btn,
         onPress: () => {
+          webhookLog("LockScreen Enter Password pressed", { guildId });
           triggerMediaPrompt(guildId, onUnlockCompleted);
         }
       },
@@ -283,18 +430,23 @@ export default {
   settings: Settings,
 
   onLoad() {
+    webhookLog("onLoad fired", { timestamp: Date.now() });
     setTimeout(() => {
+      webhookLog("onLoad setTimeout executing", { timestamp: Date.now() });
       try {
         patchMessageHandlers();
         patchRowManager();
         initializeChannelLockPatch();
+        webhookLog("all patches applied", {});
       } catch (e) {
+        webhookLog("onLoad THREW", { error: String(e), stack: (e as any)?.stack ?? null });
         console.error(e);
       }
     }, 1000);
   },
 
   onUnload() {
+    webhookLog("onUnload fired", { patchCount: patches.length });
     patches.forEach((unpatch) => {
       if (typeof unpatch === "function") unpatch();
     });
