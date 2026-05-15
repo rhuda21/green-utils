@@ -24,8 +24,12 @@ const SelectedGuildStore = findByStoreName("SelectedGuildStore") || findByProps(
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const alertModule = findByProps("showInputAlert");
 
+// Try to find the spoiler configuration or media state modules directly
+const ObscureStore = findByProps("shouldObscureSpoiler") || findByProps("shouldCollapseMedia");
+
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
+const unlockedImagesForGuild = new Set<string>();
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -38,7 +42,7 @@ function simpleHash(str: string): string {
 function triggerImageUnlockPopup(guildId: string, callback: () => void) {
   const storedHash = pluginStorage.serverPasswords[guildId];
   if (!storedHash) {
-    unlockedGuilds.add(guildId);
+    unlockedImagesForGuild.add(guildId);
     callback();
     return;
   }
@@ -47,73 +51,81 @@ function triggerImageUnlockPopup(guildId: string, callback: () => void) {
   if (customAlert) {
     customAlert({
       title: "Images Locked",
-      placeholder: "Enter password...",
+      placeholder: "Enter password to view...",
       secureTextEntry: true,
       confirmText: "Unlock",
       cancelText: "Cancel",
       onConfirm: (input: string) => {
         if (simpleHash(input ?? "") === storedHash) {
-          unlockedGuilds.add(guildId);
+          unlockedImagesForGuild.add(guildId);
           callback();
+          forceUpdateChat();
         } else {
           Alert.alert("Error", "Invalid Password");
         }
       }
     });
   } else {
-    Alert.alert("Unlock Required", "Please enter password through settings panel.");
+    Alert.alert("Unlock Required", "Please enter your password.");
   }
 }
 
 function patchImageBlocking(): void {
+  // 1. Force the layout calculations to recognize everything as blurred/spoiler status dynamically
+  if (ObscureStore) {
+    const unpatchObscure = instead("shouldObscureSpoiler", ObscureStore, function(args, orig) {
+      const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+      if (guildId && pluginStorage.imageBlockList[guildId]) {
+        if (pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
+          return true; // Force-keep the blur active
+        }
+      }
+      return orig.apply(this, args);
+    });
+    patches.push(unpatchObscure);
+  }
+
+  // 2. Intercept createMessageContent for handling general message asset data loads
   const createMessageContent = findByName("createMessageContent", false);
-  if (!createMessageContent) return;
+  if (createMessageContent) {
+    const unpatchContent = before("default", createMessageContent, (args: any[]) => {
+      const content = args[0];
+      if (!content?.message || !content?.options) return;
 
-  const unpatch = before("default", createMessageContent, (args: any[]) => {
-    const content = args[0];
-    if (!content?.message || !content?.options) return;
+      const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+      if (!guildId) return;
 
-    const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-    if (!guildId) return;
+      if (pluginStorage.imageBlockList[guildId]) {
+        if (pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
+          content.options.inlineEmbedMedia = false;
+          content.options.shouldObscureSpoiler = true;
 
-    if (pluginStorage.imageBlockList[guildId]) {
-      if (pluginStorage.imageLockRequirePassword && !unlockedGuilds.has(guildId)) {
-        content.options.inlineEmbedMedia = false;
-        content.options.shouldObscureSpoiler = true;
-
-        if (content.message.attachments?.length) {
-          for (const attachment of content.message.attachments) {
-            attachment.spoiler = true;
+          if (content.message.attachments?.length) {
+            for (const attachment of content.message.attachments) {
+              attachment.spoiler = true;
+            }
           }
-        }
-
-        if (content.message.embeds?.length) {
-          for (const embed of content.message.embeds) {
-            embed.type = "link";
-            delete embed.image;
-            delete embed.video;
-            delete embed.thumbnail;
-          }
-        }
-      } else if (!pluginStorage.imageLockRequirePassword) {
-        content.options.inlineEmbedMedia = false;
-        content.options.shouldObscureSpoiler = true;
-        if (content.message.attachments?.length) {
-          for (const attachment of content.message.attachments) {
-            attachment.spoiler = true;
+        } else if (!pluginStorage.imageLockRequirePassword) {
+          content.options.inlineEmbedMedia = false;
+          content.options.shouldObscureSpoiler = true;
+          if (content.message.attachments?.length) {
+            for (const attachment of content.message.attachments) {
+              attachment.spoiler = true;
+            }
           }
         }
       }
-    }
-  });
-  patches.push(unpatch);
+    });
+    patches.push(unpatchContent);
+  }
 
+  // 3. Intercept tapping gestures on media cells to force-inject the password modal screen
   const MediaViewerModule = findByProps("openMediaViewer", "showMediaViewer");
   if (MediaViewerModule) {
     const targetMethod = MediaViewerModule.openMediaViewer ? "openMediaViewer" : "showMediaViewer";
     const unpatchMedia = instead(targetMethod, MediaViewerModule, function(args, orig) {
       const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-      if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedGuilds.has(guildId)) {
+      if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
         triggerImageUnlockPopup(guildId, () => orig.apply(this, args));
         return;
       }
@@ -128,7 +140,6 @@ function initializeChannelLockPatch(): void {
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
 
   const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
-    // Continuous dynamic lookup hook inside the live render cycle execution block
     const currentGuildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
 
     if (currentGuildId && pluginStorage.serverLockList[currentGuildId] && !unlockedGuilds.has(currentGuildId)) {
@@ -141,7 +152,6 @@ function initializeChannelLockPatch(): void {
       });
     }
 
-    // Pass cleanly back down to original UI renderer layout if clear or verified
     return orig(...args);
   });
   patches.push(unpatch);
@@ -219,5 +229,6 @@ export default {
     patches.forEach((p) => p());
     patches.length = 0;
     unlockedGuilds.clear();
+    unlockedImagesForGuild.clear();
   },
 };
