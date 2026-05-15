@@ -1,0 +1,16 @@
+{
+  "name": "green-utils",
+  "version": "1.0.0",
+  "description": "Custom utilities for Revenge/Bunny app.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "rollup": "^4.9.6",
+    "rollup-plugin-esbuild": "^6.1.1"
+  }
+}
