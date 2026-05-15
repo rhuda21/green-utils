@@ -13,13 +13,9 @@ interface PluginStorage {
 }
 
 const pluginStorage = storage as unknown as PluginStorage;
-
 pluginStorage.imageBlockList   ??= {};
 pluginStorage.channelPasswords ??= {};
 pluginStorage.channelLockList  ??= {};
-
-const GuildStore = findByStoreName("GuildStore");
-const ChannelStore = findByStoreName("ChannelStore");
 
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
@@ -32,76 +28,76 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-function patchImageBlocking(): void {
-  // Broad target search to avoid crashing if one doesn't exist
-  const MediaComponent = 
-    findByProps("renderAttachment", "renderMedia") || 
-    findByProps("renderMediaAttachments") ||
-    findByProps("MessageMediaAttachments") ||
-    findByProps("LazyRenderMediaAttachment");
+// ─── Safe Dynamic Patching ───────────────────────────────────
+function initializePatches() {
+  console.log("[ServerGuard] Starting dynamic module search...");
 
-  if (!MediaComponent) {
-    console.log("[ServerGuard] No media component found during lookup.");
-    return;
-  }
+  const GuildStore = findByStoreName("GuildStore");
+  const ChannelStore = findByStoreName("ChannelStore");
 
-  const targetMethod = 
-    "renderAttachment" in MediaComponent ? "renderAttachment" :
-    "renderMedia" in MediaComponent ? "renderMedia" : "default";
+  // 1. Core Image Patching
+  try {
+    const MediaComponent = 
+      findByProps("renderAttachment", "renderMedia") || 
+      findByProps("renderMediaAttachments") ||
+      findByProps("MessageMediaAttachments");
 
-  const unpatch = instead(targetMethod, MediaComponent, (args: any[], orig: Function) => {
-    const guildId = GuildStore?.getLastSelectedGuildId?.();
+    if (MediaComponent && GuildStore) {
+      const targetMethod = "renderAttachment" in MediaComponent ? "renderAttachment" : "renderMedia";
+      
+      const unpush = instead(targetMethod, MediaComponent, (args: any[], orig: Function) => {
+        const guildId = GuildStore.getLastSelectedGuildId?.();
+        if (guildId && pluginStorage.imageBlockList[guildId]) {
+          const attachment = args[0]?.attachment || args[0]?.item || args[0];
+          const url = attachment?.url || attachment?.proxyUrl || "";
 
-    if (guildId && pluginStorage.imageBlockList[guildId]) {
-      const attachment = args[0]?.attachment || args[0]?.item || args[0];
-      const url = attachment?.url || attachment?.proxyUrl || "";
-
-      if (attachment?.content_type?.startsWith("image") || url.match(/\.(jpg|jpeg|png|webp|gif)/i)) {
-        return React.createElement(
-          View,
-          { style: { padding: 12, backgroundColor: "#2b2d31", borderRadius: 8, marginVertical: 4, alignItems: "center" } },
-          React.createElement(Text, { style: { color: "#ed4245", fontSize: 13, fontWeight: "600" } }, "🚫 Image hidden by ServerGuard")
-        );
-      }
-    }
-    return orig(...args);
-  });
-
-  patches.push(unpatch);
-}
-
-function patchChannelLock(): void {
-  const ChannelView = 
-    findByProps("ChannelChatWrapper") || 
-    findByProps("ChannelChat") || 
-    findByProps("MessagesWrapper");
-
-  if (!ChannelView) {
-    console.log("[ServerGuard] No ChannelView component found during lookup.");
-    return;
-  }
-
-  const targetMethod = 
-    "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" :
-    "ChannelChat" in ChannelView ? "ChannelChat" : "default";
-
-  const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
-    const channelId = ChannelStore?.getLastSelectedChannelId?.();
-
-    if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
-      return React.createElement(LockScreen, {
-        channelId,
-        onUnlockCompleted: () => {
-          unlockedChannels.add(channelId);
+          if (attachment?.content_type?.startsWith("image") || url.match(/\.(jpg|jpeg|png|webp|gif)/i)) {
+            return React.createElement(
+              View,
+              { style: { padding: 12, backgroundColor: "#2b2d31", borderRadius: 8, marginVertical: 4, alignItems: "center" } },
+              React.createElement(Text, { style: { color: "#ed4245", fontSize: 13, fontWeight: "600" } }, "🚫 Image hidden by ServerGuard")
+            );
+          }
         }
+        return orig(...args);
       });
+      patches.push(unpush);
+      console.log(`[ServerGuard] Image blocking successfully hooked onto: ${targetMethod}`);
+    } else {
+      console.warn("[ServerGuard] Could not find Discord MediaComponent modules.");
     }
-    return orig(...args);
-  });
+  } catch (e) {
+    console.error("[ServerGuard] Image patch initialization crashed:", e);
+  }
 
-  patches.push(unpatch);
+  // 2. Core Channel Lock Patching
+  try {
+    const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
+    
+    if (ChannelView && ChannelStore) {
+      const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
+
+      const unpush = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
+        const channelId = ChannelStore.getLastSelectedChannelId?.();
+        if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
+          return React.createElement(LockScreen, {
+            channelId,
+            onUnlockCompleted: () => unlockedChannels.add(channelId)
+          });
+        }
+        return orig(...args);
+      });
+      patches.push(unpush);
+      console.log(`[ServerGuard] Channel lock successfully hooked onto: ${targetMethod}`);
+    } else {
+      console.warn("[ServerGuard] Could not find Discord ChannelView modules.");
+    }
+  } catch (e) {
+    console.error("[ServerGuard] Channel lock patch initialization crashed:", e);
+  }
 }
 
+// ─── UI Lock Component ────────────────────────────────────────
 function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
@@ -115,25 +111,32 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
   function handleUnlock() {
     const storedHash = pluginStorage.channelPasswords[channelId];
     
-    // Completely standalone Android/iOS safe popup prompt
-    Alert.prompt(
-      "Channel Locked",
-      "Enter password:",
-      [
-        { text: "Cancel" },
-        {
-          text: "Unlock",
-          onPress: (input?: string) => {
-            if (simpleHash(input ?? "") === storedHash) {
-              onUnlockCompleted();
-            } else {
-              Alert.alert("Error", "Invalid Password");
+    // Fallback checking for custom input alert layouts (Android-safe)
+    const alertPrompt = (Alert as any).prompt || findByProps("showInputAlert")?.showInputAlert;
+    
+    if (alertPrompt) {
+      alertPrompt(
+        "Channel Locked",
+        "Enter password:",
+        [
+          { text: "Cancel" },
+          {
+            text: "Unlock",
+            onPress: (input?: string) => {
+              if (simpleHash(input ?? "") === storedHash) {
+                onUnlockCompleted();
+              } else {
+                Alert.alert("Error", "Invalid Password");
+              }
             }
           }
-        }
-      ],
-      "secure-text"
-    );
+        ],
+        "secure-text"
+      );
+    } else {
+      // Basic text box prompt string toggle if native handler fails
+      Alert.alert("Device Limitation", "Please manage lock credentials via the plugin settings page.");
+    }
   }
 
   return React.createElement(
@@ -148,24 +151,22 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
   );
 }
 
-// ─── Plugin lifecycle ─────────────────────────────────────────
+// ─── Plugin Lifecycle ─────────────────────────────────────────
 export default {
   settings: Settings,
 
   onLoad() {
-    console.log("[ServerGuard] onLoad() baseline triggered.");
-    try {
-      patchImageBlocking();
-      patchChannelLock();
-      console.log("[ServerGuard] Patches applied cleanly.");
-    } catch (error: any) {
-      // Force a native alert window if it crashes internally so we can see the exact error text
-      Alert.alert("ServerGuard Load Crash", String(error?.stack || error));
-    }
+    console.log("[ServerGuard] Plugin loading initial state...");
+    
+    // Run lookup after a 1-second delay to allow Discord Metro registry to populate completely
+    setTimeout(() => {
+      initializePatches();
+    }, 1000);
   },
 
   onUnload() {
     patches.forEach((p) => p());
     patches.length = 0;
+    unlockedChannels.clear();
   },
 };
