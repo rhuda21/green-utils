@@ -104,83 +104,51 @@ function makeRPL(attachment, shouldObscure: boolean) {
 
 function handleInviteFileAction(args, originalFunction) {
   const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+  const nativeEvent = args?.[0]?.nativeEvent ?? args?.[0];
 
-  webhookLog("handleInviteFileAction entered", {
-    guildId,
-    argsLength: args?.length,
-    arg0Keys: args?.[0] ? Object.keys(args[0]) : null,
-    arg1Keys: args?.[1] ? Object.keys(args[1]) : null,
-    arg0HasNativeEvent: !!args?.[0]?.nativeEvent,
-    arg0NativeEventKeys: args?.[0]?.nativeEvent ? Object.keys(args[0].nativeEvent) : null,
+  const messageId = nativeEvent?.messageId;
+  const index = nativeEvent?.index;
+
+  webhookLog("handleInviteFileAction entered", { guildId, messageId, index });
+
+  // Look up the codedLink from the message store directly
+  const MessageStore = findByStoreName("MessageStore");
+  const ChannelStore = findByStoreName("ChannelStore");
+  const channelId = ChannelStore?.getChannel?.(guildId)?.id 
+    ?? findByStoreName("SelectedChannelStore")?.getChannelId?.();
+
+  webhookLog("channel lookup", { channelId });
+
+  const message = MessageStore?.getMessage?.(channelId, messageId);
+  const codedLink = message?.codedLinks?.[index ?? 0];
+
+  webhookLog("codedLink lookup", {
+    hasMessage: !!message,
+    codedLinkCount: message?.codedLinks?.length,
+    hasCodedLink: !!codedLink,
+    hasRawAttachment: !!codedLink?.rawAttachment,
   });
 
-  webhookLog("storage state at tap", {
-    blocked: pluginStorage.imageBlockList[guildId],
-    requirePw: pluginStorage.imageLockRequirePassword,
-    unlocked: unlockedImagesForGuild.has(guildId),
-    allBlockedGuilds: Object.keys(pluginStorage.imageBlockList),
-  });
-
-  let targetEventData = args?.[0]?.nativeEvent ?? args?.[0];
-  if (!targetEventData?.codedLink && args?.[1]?.codedLink) {
-    targetEventData = args[1];
-  }
-
-  webhookLog("targetEventData resolved", {
-    hasCodedLink: !!targetEventData?.codedLink,
-    targetKeys: targetEventData ? Object.keys(targetEventData) : null,
-    codedLinkKeys: targetEventData?.codedLink ? Object.keys(targetEventData.codedLink) : null,
-    hasRawAttachment: !!targetEventData?.codedLink?.rawAttachment,
-    extendedType: targetEventData?.codedLink?.extendedType,
-  });
-
-  const executeOriginal = () => {
-    webhookLog("executeOriginal called", {
-      hasRawAttachment: !!targetEventData?.codedLink?.rawAttachment,
-      rawAttachmentFilename: targetEventData?.codedLink?.rawAttachment?.filename ?? null,
-    });
-    if (targetEventData && targetEventData.codedLink?.rawAttachment) {
-      targetEventData.message ??= {};
-      targetEventData.message.attachments = [targetEventData.codedLink.rawAttachment];
-    }
-    return originalFunction(...args);
-  };
-
-  const shouldPrompt = !!(
-    guildId &&
-    pluginStorage.imageBlockList[guildId] &&
-    pluginStorage.imageLockRequirePassword &&
-    !unlockedImagesForGuild.has(guildId)
-  );
-
-  webhookLog("prompt gate check", {
-    shouldPrompt,
-    guildId: !!guildId,
-    inBlockList: !!pluginStorage.imageBlockList[guildId],
-    requirePw: !!pluginStorage.imageLockRequirePassword,
-    notYetUnlocked: !unlockedImagesForGuild.has(guildId),
-  });
-
-  if (shouldPrompt) {
-    webhookLog("calling triggerMediaPrompt", { guildId });
+  if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
+    webhookLog("triggering prompt", { guildId });
     triggerMediaPrompt(guildId, () => {
-      webhookLog("prompt success callback fired", { guildId });
-      executeOriginal();
+      webhookLog("prompt success — opening attachment", {});
+      // Now open the real attachment after unlock
+      if (codedLink?.rawAttachment) {
+        const fakeArgs = [{
+          ...args[0],
+          nativeEvent: {
+            ...nativeEvent,
+            codedLink: codedLink,
+          }
+        }];
+        originalFunction(...fakeArgs);
+      }
     });
     return null;
   }
 
-  webhookLog("fell through — skipping prompt", {
-    reason: !guildId
-      ? "no guildId"
-      : !pluginStorage.imageBlockList[guildId]
-      ? "not in blocklist"
-      : !pluginStorage.imageLockRequirePassword
-      ? "requirePassword is false"
-      : "already unlocked",
-  });
-
-  return executeOriginal();
+  return originalFunction(...args);
 }
 
 function patchMessageHandlers(): void {
