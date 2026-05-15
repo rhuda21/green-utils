@@ -5,18 +5,22 @@ import { React, ReactNative } from "@vendetta/metro/common";
 const { ScrollView, Text, View, Switch, StyleSheet, TouchableOpacity, Alert } = ReactNative;
 
 const GuildStore = findByStoreName("GuildStore");
-const ChannelStore = findByStoreName("ChannelStore");
-const ChannelPropsFallback = findByProps("getChannel", "getGuildChannels") || findByProps("getMutableGuildChannelsAll");
-
 const alerts = findByProps("showInputAlert");
 
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
-  channelPasswords: Record<string, string>;
-  channelLockList: Record<string, boolean>;
+  serverPasswords: Record<string, string>;
+  serverLockList: Record<string, boolean>;
+  imageLockRequirePassword: boolean;
 }
 
 const pluginStorage = storage as unknown as PluginStorage;
+
+// Set up clean fallbacks for our revised feature properties
+pluginStorage.imageBlockList           ??= {};
+pluginStorage.serverPasswords          ??= {};
+pluginStorage.serverLockList           ??= {};
+pluginStorage.imageLockRequirePassword ??= false;
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -46,16 +50,7 @@ const s = StyleSheet.create({
   rowTextContainer: { flex: 1, marginRight: 16 },
   rowTitle: { color: "#f2f3f5", fontSize: 16, fontWeight: "600" },
   rowSubtext: { color: "#949ba4", fontSize: 12, marginTop: 4, lineHeight: 16 },
-  divider: { height: 1, backgroundColor: "#3f4147", marginVertical: 16 },
-  channelListHead: { color: "#f2f3f5", fontSize: 14, fontWeight: "700", marginBottom: 12 },
-  channelItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12 },
-  channelDivider: { height: 1, backgroundColor: "#35373c" },
-  channelLeft: { flexDirection: "row", alignItems: "center", flex: 1, marginRight: 16 },
-  channelHash: { color: "#80848e", fontSize: 16, marginRight: 8, fontWeight: "600" },
-  channelHashLocked: { color: "#f23f43" },
-  channelName: { color: "#dbdee1", fontSize: 15, fontWeight: "500" },
-  channelNameLocked: { color: "#f23f43", fontWeight: "600" },
-  noChannels: { color: "#949ba4", fontSize: 13, textAlign: "center", paddingVertical: 16, fontStyle: "italic" }
+  divider: { height: 1, backgroundColor: "#3f4147", marginVertical: 16 }
 });
 
 export default function Settings() {
@@ -63,42 +58,24 @@ export default function Settings() {
   const [selectedGuildId, setSelectedGuildId] = React.useState<string>(guilds[0]?.id || "");
   const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
 
-  const activeChannels = React.useMemo(() => {
-    if (!selectedGuildId) return [];
-    
-    const getChannelsModule = findByProps("getChannels") || findByProps("getGuildChannels") || ChannelPropsFallback;
-    if (getChannelsModule) {
-      const channelData = getChannelsModule.getChannels?.(selectedGuildId) || getChannelsModule.getGuildChannels?.(selectedGuildId);
-      if (channelData && typeof channelData === "object") {
-        const list = Array.isArray(channelData) ? channelData : Object.values(channelData);
-        return list.filter((c: any) => c && (c.type === 0 || c.type === 2));
-      }
-    }
-
-    if (ChannelStore?.getMutableGuildChannelsAll) {
-      const allChannels = Object.values(ChannelStore.getMutableGuildChannelsAll());
-      return allChannels.filter((c: any) => c && c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
-    }
-
-    if (ChannelPropsFallback?.getMutableGuildChannelsAll) {
-      const allChannels = Object.values(ChannelPropsFallback.getMutableGuildChannelsAll());
-      return allChannels.filter((c: any) => c && c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
-    }
-
-    return [];
-  }, [selectedGuildId]);
-
   const isImageBlocked = !!pluginStorage.imageBlockList[selectedGuildId];
-  
+  const isServerLocked = !!pluginStorage.serverLockList[selectedGuildId];
+  const requirePasswordForImages = pluginStorage.imageLockRequirePassword;
+
   function toggleImageBlocking(val: boolean) {
     pluginStorage.imageBlockList[selectedGuildId] = val;
     forceUpdate();
   }
 
-  function handleChannelToggle(channelId: string, isCurrentlyLocked: boolean) {
+  function toggleImagePasswordRequirement(val: boolean) {
+    pluginStorage.imageLockRequirePassword = val;
+    forceUpdate();
+  }
+
+  function handleServerLockToggle(guildId: string, isCurrentlyLocked: boolean) {
     if (isCurrentlyLocked) {
-      delete pluginStorage.channelLockList[channelId];
-      delete pluginStorage.channelPasswords[channelId];
+      delete pluginStorage.serverLockList[guildId];
+      delete pluginStorage.serverPasswords[guildId];
       forceUpdate();
     } else {
       const targetAlert = alerts?.showInputAlert || (Alert as any).prompt;
@@ -109,18 +86,18 @@ export default function Settings() {
       }
 
       targetAlert({
-        title: "Create Lock Rule",
-        placeholder: "Set protection key...",
+        title: "Create Server Lock",
+        placeholder: "Set protection master key...",
         secureTextEntry: true,
-        confirmText: "Lock Channel",
+        confirmText: "Lock Entire Server",
         cancelText: "Cancel",
         onConfirm: (input: string) => {
           if (!input || !input.trim()) {
-            Alert.alert("Failed", "Password cannot be left blank.");
+            Alert.alert("Failed", "Master password cannot be left blank.");
             return;
           }
-          pluginStorage.channelLockList[channelId] = true;
-          pluginStorage.channelPasswords[channelId] = simpleHash(input);
+          pluginStorage.serverLockList[guildId] = true;
+          pluginStorage.serverPasswords[guildId] = simpleHash(input);
           forceUpdate();
         }
       });
@@ -158,8 +135,28 @@ export default function Settings() {
 
       {selectedGuildId && (
         <>
-          <Text style={s.sectionHead}>Settings Matrix</Text>
+          <Text style={s.sectionHead}>Security Configuration Matrix</Text>
           <View style={s.mainCard}>
+            
+            {/* Global/Server Layout Lock Toggle */}
+            <View style={s.row}>
+              <View style={s.rowTextContainer}>
+                <Text style={s.rowTitle}>Lock Server Infrastructure</Text>
+                <Text style={s.rowSubtext}>
+                  Restricts access to all internal rooms on this server behind a secure validation firewall gateway.
+                </Text>
+              </View>
+              <Switch 
+                value={isServerLocked} 
+                onValueChange={() => handleServerLockToggle(selectedGuildId, isServerLocked)}
+                trackColor={{ false: "#4e5058", true: "#f23f43" }}
+                thumbColor="#ffffff"
+              />
+            </View>
+
+            <View style={s.divider} />
+
+            {/* Server Media Blocking Toggle */}
             <View style={s.row}>
               <View style={s.rowTextContainer}>
                 <Text style={s.rowTitle}>Block Server Images</Text>
@@ -177,36 +174,22 @@ export default function Settings() {
 
             <View style={s.divider} />
 
-            <Text style={s.channelListHead}>Channel Privacy Blocks</Text>
+            {/* Optional Password Requirement for Blocked Image Previews */}
+            <View style={s.row}>
+              <View style={s.rowTextContainer}>
+                <Text style={s.rowTitle}>Require Password for Image Previews</Text>
+                <Text style={s.rowSubtext}>
+                  When enabled, viewing filtered image assets will prompt for your server lock password instead of automatically revealing them.
+                </Text>
+              </View>
+              <Switch 
+                value={requirePasswordForImages} 
+                onValueChange={toggleImagePasswordRequirement}
+                trackColor={{ false: "#4e5058", true: "#5865f2" }}
+                thumbColor="#ffffff"
+              />
+            </View>
 
-            {activeChannels.length === 0 ? (
-              <Text style={s.noChannels}>No supported text or voice channels inside this guild environment.</Text>
-            ) : (
-              activeChannels.map((ch: any, idx) => {
-                const isLocked = !!pluginStorage.channelLockList[ch.id];
-                return (
-                  <View key={ch.id}>
-                    <View style={s.channelItem}>
-                      <View style={s.channelLeft}>
-                        <Text style={[s.channelHash, isLocked && s.channelHashLocked]}>
-                          {isLocked ? "🔒" : "#"}
-                        </Text>
-                        <Text style={[s.channelName, isLocked && s.channelNameLocked]}>
-                          {ch.name}
-                        </Text>
-                      </View>
-                      <Switch
-                        value={isLocked}
-                        onValueChange={() => handleChannelToggle(ch.id, isLocked)}
-                        trackColor={{ false: "#4e5058", true: "#f23f43" }}
-                        thumbColor="#ffffff"
-                      />
-                    </View>
-                    {idx !== activeChannels.length - 1 && <View style={s.channelDivider} />}
-                  </View>
-                );
-              })
-            )}
           </View>
         </>
       )}

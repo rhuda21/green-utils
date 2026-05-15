@@ -8,26 +8,27 @@ const { Text, View, TouchableOpacity, StyleSheet, Alert } = ReactNative;
 
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
-  channelPasswords: Record<string, string>;
-  channelLockList: Record<string, boolean>;
+  serverPasswords: Record<string, string>;
+  serverLockList: Record<string, boolean>;
+  imageLockRequirePassword?: boolean;
 }
 
 const pluginStorage = storage as unknown as PluginStorage;
 
 pluginStorage.imageBlockList   ??= {};
-pluginStorage.channelPasswords ??= {};
-pluginStorage.channelLockList  ??= {};
+pluginStorage.serverPasswords  ??= {};
+pluginStorage.serverLockList   ??= {};
+pluginStorage.imageLockRequirePassword ??= false;
 
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStoreModule = findByProps("getLastSelectedChannelId") || findByProps("getChannel", "getGuildChannels");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
-const ContextMenuModule = findByProps("openContextMenu", "openContextMenuLazy");
-const ActionSheetModule = findByProps("openActionSheet", "hideActionSheet", "showSimpleActionSheet");
+const ActionSheetModule = findByProps("showSimpleActionSheet") || findByProps("openActionSheet");
+const ContextMenuModule = findByProps("openContextMenuLazy") || findByProps("openContextMenu");
 const alertModule = findByProps("showInputAlert");
 
 const patches: (() => void)[] = [];
-const unlockedChannels = new Set<string>();
-const unlockedGuildImages = new Set<string>();
+const unlockedGuilds = new Set<string>();
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -37,126 +38,18 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-function handleUnlockGuildImages(guildId: string): void {
-  const channelId = ChannelStoreModule?.getLastSelectedChannelId?.();
-  if (!channelId) return;
-
-  const storedHash = pluginStorage.channelPasswords[channelId];
-  if (!storedHash) {
-    unlockedGuildImages.add(guildId);
-    return;
-  }
-
-  const customAlert = alertModule?.showInputAlert;
-
-  if (customAlert) {
-    customAlert({
-      title: "Images Locked",
-      placeholder: "Enter active channel password...",
-      secureTextEntry: true,
-      confirmText: "Unlock",
-      cancelText: "Cancel",
-      onConfirm: (input: string) => {
-        if (simpleHash(input ?? "") === storedHash) {
-          unlockedGuildImages.add(guildId);
-        } else {
-          Alert.alert("Error", "Invalid Password Token");
-        }
-      }
-    });
-  } else if ((Alert as any).prompt) {
-    (Alert as any).prompt(
-      "Images Locked",
-      "Enter active channel password to temporarily reveal server media:",
-      [
-        { text: "Cancel" },
-        {
-          text: "Unlock",
-          onPress: (input?: string) => {
-            if (simpleHash(input ?? "") === storedHash) {
-              unlockedGuildImages.add(guildId);
-            } else {
-              Alert.alert("Error", "Invalid Password Token");
-            }
-          }
-        }
-      ],
-      "secure-text"
-    );
-  }
-}
-
-function patchImageBlocking(): void {
-  const createMessageContent = findByName("createMessageContent", false);
-  const getChannel = findByProps("getChannel")?.getChannel;
-
-  if (!createMessageContent || !getChannel) return;
-
-  const unpatch = before("default", createMessageContent, (args: any[]) => {
-    const content = args[0];
-    if (!content?.message?.channel_id || !content?.options) return;
-
-    const channel = getChannel(content.message.channel_id);
-    const guildId = channel?.guild_id;
-
-    if (guildId && pluginStorage.imageBlockList[guildId] && !unlockedGuildImages.has(guildId)) {
-      content.options.inlineEmbedMedia = false;
-      content.options.shouldObscureSpoiler = true;
-
-      const message = content.message;
-      
-      if (message?.attachments?.length) {
-        for (const attachment of message.attachments) {
-          attachment.spoiler = true;
-        }
-      }
-
-      if (message?.embeds?.length) {
-        for (const embed of message.embeds) {
-          embed.type = "link";
-          delete embed.image;
-          delete embed.video;
-          delete embed.thumbnail;
-        }
-      }
-    }
-  });
-
-  patches.push(unpatch);
-}
-
-function initializeChannelLockPatch(): void {
-  if (!ChannelView || !ChannelStoreModule) return;
-
-  const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
-
-  const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
-    const channelId = ChannelStoreModule.getLastSelectedChannelId?.();
-
-    if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
-      return React.createElement(LockScreen, {
-        channelId,
-        onUnlockCompleted: () => unlockedChannels.add(channelId)
-      });
-    }
-
-    return orig(...args);
-  });
-
-  patches.push(unpatch);
-}
-
-function createActionObject(channelName: string, channelId: string, isLocked: boolean) {
+function createActionObject(guildName: string, guildId: string, isLocked: boolean) {
   return {
-    text: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
-    label: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
+    text: isLocked ? "Unlock Server (greenUtils)" : "Lock Server (greenUtils)",
+    label: isLocked ? "Unlock Server (greenUtils)" : "Lock Server (greenUtils)",
     icon: isLocked ? "lock_open" : "lock",
     variant: isLocked ? "default" : "danger",
     onPress: () => {
       if (isLocked) {
-        delete pluginStorage.channelLockList[channelId];
-        delete pluginStorage.channelPasswords[channelId];
-        Alert.alert("Success", `Channel #${channelName} unlocked completely.`);
+        delete pluginStorage.serverLockList[guildId];
+        delete pluginStorage.serverPasswords[guildId];
+        unlockedGuilds.delete(guildId);
+        Alert.alert("Success", `Server "${guildName}" safety restrictions removed.`);
       } else {
         const inputAlert = alertModule?.showInputAlert || (Alert as any).prompt;
         if (!inputAlert) {
@@ -166,37 +59,37 @@ function createActionObject(channelName: string, channelId: string, isLocked: bo
 
         if (inputAlert.name === "showInputAlert" || !Object.hasOwn(Alert, "prompt")) {
           inputAlert({
-            title: "Lock Secure Channel",
-            placeholder: "Set protection key text...",
+            title: "Lock Entire Server",
+            placeholder: "Set encryption master key...",
             secureTextEntry: true,
-            confirmText: "Apply Lock",
+            confirmText: "Lock Server",
             cancelText: "Cancel",
             onConfirm: (text: string) => {
               if (!text || !text.trim()) {
                 Alert.alert("Error", "Passwords cannot be blank.");
                 return;
               }
-              pluginStorage.channelLockList[channelId] = true;
-              pluginStorage.channelPasswords[channelId] = simpleHash(text);
-              Alert.alert("Success", `🔒 #${channelName} is now protected.`);
+              pluginStorage.serverLockList[guildId] = true;
+              pluginStorage.serverPasswords[guildId] = simpleHash(text);
+              Alert.alert("Success", `🔒 "${guildName}" layout is now protected.`);
             }
           });
         } else {
           (Alert as any).prompt(
-            "Lock Secure Channel",
-            "Set protection key text:",
+            "Lock Entire Server",
+            "Set encryption master key:",
             [
               { text: "Cancel" },
               {
-                text: "Apply Lock",
+                text: "Lock Server",
                 onPress: (text?: string) => {
                   if (!text || !text.trim()) {
                     Alert.alert("Error", "Passwords cannot be blank.");
                     return;
                   }
-                  pluginStorage.channelLockList[channelId] = true;
-                  pluginStorage.channelPasswords[channelId] = simpleHash(text);
-                  Alert.alert("Success", `🔒 #${channelName} is now protected.`);
+                  pluginStorage.serverLockList[guildId] = true;
+                  pluginStorage.serverPasswords[guildId] = simpleHash(text);
+                  Alert.alert("Success", `🔒 "${guildName}" layout is now protected.`);
                 }
               }
             ],
@@ -213,19 +106,30 @@ function patchChannelHoldMenu(): void {
     const methods = Object.keys(ContextMenuModule).filter(k => typeof (ContextMenuModule as any)[k] === "function");
     for (const method of methods) {
       const unpatch = instead(method as any, ContextMenuModule, function (args, orig) {
-        for (const arg of args) {
-          if (arg && typeof arg === "object") {
-            const channelId = arg.channelId || arg.channel?.id || arg.id;
-            if (channelId && typeof channelId === "string" && channelId.length > 10) {
-              const channel = ChannelStoreModule?.getChannel?.(channelId);
-              const channelName = channel?.name || "Channel";
-              const isLocked = !!pluginStorage.channelLockList?.[channelId];
-              const customAction = createActionObject(channelName, channelId, isLocked);
+        const [,, renderOptions] = args;
+        if (renderOptions && typeof renderOptions === "object") {
+          const channelId = renderOptions.channelId || renderOptions.channel?.id || renderOptions.id;
+          if (channelId) {
+            const channel = ChannelStoreModule?.getChannel?.(channelId);
+            const guildId = channel?.guild_id;
+            if (guildId) {
+              const guild = GuildStore?.getGuild?.(guildId);
+              const guildName = guild?.name || "Server";
+              const isLocked = !!pluginStorage.serverLockList?.[guildId];
+              const customAction = createActionObject(guildName, guildId, isLocked);
 
-              if (Array.isArray(arg.options)) arg.options.push(customAction);
-              if (Array.isArray(arg.items)) arg.items.push(customAction);
-              if (Array.isArray(arg.actions)) arg.actions.push(customAction);
-              if (arg.sections?.[0]?.items) arg.sections[0].items.push(customAction);
+              if (renderOptions.getRows) {
+                const originalGetRows = renderOptions.getRows;
+                renderOptions.getRows = function (...rowArgs: any[]) {
+                  const rows = originalGetRows.apply(this, rowArgs);
+                  if (Array.isArray(rows)) rows.push(customAction);
+                  return rows;
+                };
+              }
+
+              if (Array.isArray(renderOptions.options)) renderOptions.options.push(customAction);
+              if (Array.isArray(renderOptions.items)) renderOptions.items.push(customAction);
+              if (Array.isArray(renderOptions.actions)) renderOptions.actions.push(customAction);
             }
           }
         }
@@ -236,17 +140,19 @@ function patchChannelHoldMenu(): void {
   }
 
   if (ActionSheetModule) {
-    const sheetMethods = Object.keys(ActionSheetModule).filter(k => typeof (ActionSheetModule as any)[k] === "function");
-    for (const method of sheetMethods) {
+    const methods = Object.keys(ActionSheetModule).filter(k => typeof (ActionSheetModule as any)[k] === "function");
+    for (const method of methods) {
       const unpatch = instead(method as any, ActionSheetModule, function (args, orig) {
         for (const arg of args) {
           if (arg && typeof arg === "object") {
             const channelId = arg.channelId || arg.channel?.id || arg.id;
-            if (channelId && typeof channelId === "string" && channelId.length > 10) {
-              const channel = ChannelStoreModule?.getChannel?.(channelId);
-              const channelName = channel?.name || "Channel";
-              const isLocked = !!pluginStorage.channelLockList?.[channelId];
-              const customAction = createActionObject(channelName, channelId, isLocked);
+            const guildId = arg.guildId || arg.guild?.id || ChannelStoreModule?.getChannel?.(channelId)?.guild_id;
+            
+            if (guildId && typeof guildId === "string" && guildId.length > 10) {
+              const guild = GuildStore?.getGuild?.(guildId);
+              const guildName = guild?.name || "Server";
+              const isLocked = !!pluginStorage.serverLockList?.[guildId];
+              const customAction = createActionObject(guildName, guildId, isLocked);
 
               if (Array.isArray(arg.options)) arg.options.push(customAction);
               if (Array.isArray(arg.items)) arg.items.push(customAction);
@@ -262,7 +168,76 @@ function patchChannelHoldMenu(): void {
   }
 }
 
-function LockScreen({ channelId, onUnlockCompleted }: any) {
+function patchImageBlocking(): void {
+  const createMessageContent = findByName("createMessageContent", false);
+  const getChannel = findByProps("getChannel")?.getChannel;
+
+  if (!createMessageContent || !getChannel) return;
+
+  const unpatch = before("default", createMessageContent, (args: any[]) => {
+    const content = args[0];
+    if (!content?.message?.channel_id || !content?.options) return;
+
+    const channel = getChannel(content.message.channel_id);
+    const guildId = channel?.guild_id;
+
+    if (guildId && pluginStorage.imageBlockList[guildId]) {
+      if (pluginStorage.imageLockRequirePassword && !unlockedGuilds.has(guildId)) {
+        content.options.inlineEmbedMedia = false;
+        content.options.shouldObscureSpoiler = true;
+
+        const message = content.message;
+        if (message?.attachments?.length) {
+          for (const attachment of message.attachments) {
+            attachment.spoiler = true;
+          }
+        }
+
+        if (message?.embeds?.length) {
+          for (const embed of message.embeds) {
+            embed.type = "link";
+            delete embed.image;
+            delete embed.video;
+            delete embed.thumbnail;
+          }
+        }
+      } else if (!pluginStorage.imageLockRequirePassword) {
+        content.options.inlineEmbedMedia = false;
+        content.options.shouldObscureSpoiler = true;
+        
+        const message = content.message;
+        if (message?.attachments?.length) {
+          for (const attachment of message.attachments) {
+            attachment.spoiler = true;
+          }
+        }
+      }
+    }
+  });
+  patches.push(unpatch);
+}
+
+function initializeChannelLockPatch(): void {
+  if (!ChannelView || !ChannelStoreModule) return;
+  const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
+
+  const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
+    const channelId = ChannelStoreModule.getLastSelectedChannelId?.();
+    const channel = ChannelStoreModule?.getChannel?.(channelId);
+    const guildId = channel?.guild_id;
+
+    if (guildId && pluginStorage.serverLockList[guildId] && !unlockedGuilds.has(guildId)) {
+      return React.createElement(LockScreen, {
+        guildId,
+        onUnlockCompleted: () => unlockedGuilds.add(guildId)
+      });
+    }
+    return orig(...args);
+  });
+  patches.push(unpatch);
+}
+
+function LockScreen({ guildId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
     icon:      { fontSize: 56, marginBottom: 16 },
@@ -273,38 +248,38 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
   });
 
   function handleUnlock() {
-    const storedHash = pluginStorage.channelPasswords[channelId];
+    const storedHash = pluginStorage.serverPasswords[guildId];
     const alertPrompt = alertModule?.showInputAlert || (Alert as any).prompt;
     
     if (alertPrompt) {
       if (typeof alertPrompt === "function" && alertPrompt.name === "showInputAlert") {
         alertPrompt({
-          title: "Channel Locked",
-          placeholder: "Enter password to unlock chat access:",
+          title: "Server Layout Restricted",
+          placeholder: "Enter credentials to unlock server channels:",
           secureTextEntry: true,
-          confirmText: "Unlock",
+          confirmText: "Access Server",
           cancelText: "Cancel",
           onConfirm: (input: string) => {
             if (simpleHash(input ?? "") === storedHash) {
               onUnlockCompleted();
             } else {
-              Alert.alert("Error", "Invalid Password Configuration");
+              Alert.alert("Error", "Invalid Security Credentials");
             }
           }
         });
       } else {
         (Alert as any).prompt(
-          "Channel Locked",
-          "Enter password to unlock chat access:",
+          "Server Layout Restricted",
+          "Enter credentials to unlock server channels:",
           [
             { text: "Cancel" },
             {
-              text: "Unlock",
+              text: "Access Server",
               onPress: (input?: string) => {
                 if (simpleHash(input ?? "") === storedHash) {
                   onUnlockCompleted();
                 } else {
-                  Alert.alert("Error", "Invalid Password Configuration");
+                  Alert.alert("Error", "Invalid Security Credentials");
                 }
               }
             }
@@ -313,18 +288,18 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
         );
       }
     } else {
-      Alert.alert("Device Error", "Unable to map prompt interfaces. Lift block thresholds in Settings.");
+      Alert.alert("Device Error", "Failed to compile security prompt layers.");
     }
   }
 
   return React.createElement(
     View, { style: styles.container },
     React.createElement(Text, { style: styles.icon }, "🔒"),
-    React.createElement(Text, { style: styles.title }, "Channel Locked"),
-    React.createElement(Text, { style: styles.subtitle }, "This room is restricted behind a ServerGuard credentials validation wall."),
+    React.createElement(Text, { style: styles.title }, "Server Locked"),
+    React.createElement(Text, { style: styles.subtitle }, "Access to this server's internal framework is restricted behind a master gateway wall."),
     React.createElement(
       TouchableOpacity, { style: styles.btn, onPress: handleUnlock },
-      React.createElement(Text, { style: styles.btnText }, "Tap to Unlock")
+      React.createElement(Text, { style: styles.btnText }, "Decrypt Server")
     )
   );
 }
@@ -347,7 +322,6 @@ export default {
   onUnload() {
     patches.forEach((p) => p());
     patches.length = 0;
-    unlockedChannels.clear();
-    unlockedGuildImages.clear();
+    unlockedGuilds.clear();
   },
 };
