@@ -1,6 +1,6 @@
 /** MessageHandlersPatcher
- *  Most code here is old and based on https://github.com/acquitelol/better-chat-gestures/blob/master/src/index.tsx
- *  except I over-engineered a lot
+ * Most code here is old and based on https://github.com/acquitelol/better-chat-gestures/blob/master/src/index.tsx
+ * except I over-engineered a lot
  */
 
 import { findByProps } from '@vendetta/metro';
@@ -9,7 +9,7 @@ import { before, instead } from '@vendetta/patcher';
 const { MessagesHandlers } = findByProps('MessagesHandlers');
 let origGetParams: any;
 let patches: Map<symbol, () => void> = new Map();
-let pendingPatches: Map<symbol, [string, (args: any[]) => any, 'before' | 'instead']> = new Map();
+let pendingPatches: Map<symbol, [string, (args: any[], orig: Function) => any, 'before' | 'instead']> = new Map();
 let _handlers: any;
 const isPatchedSymbol = Symbol('isPatchedSymbol');
 
@@ -111,8 +111,16 @@ function patchHandlers(handlers: any) {
   if (handlers[isPatchedSymbol]) return;
   handlers[isPatchedSymbol] = true;
   _handlers = handlers;
+  
   for (let [a, val] of pendingPatches) {
-    patches.set(a, val[2] === 'instead' ? instead(val[0], _handlers, val[1]) : before(val[0], _handlers, val[1]));
+    if (val[2] === 'instead') {
+      patches.set(a, instead(val[0], _handlers, function(this: any, args, orig) {
+        // Force the custom validation logic to run with Discord's native bound 'this' context
+        return val[1](args, (...boundArgs: any[]) => orig.apply(this, boundArgs.length ? boundArgs : args));
+      }));
+    } else {
+      patches.set(a, before(val[0], _handlers, val[1]));
+    }
     pendingPatches.delete(a);
   }
 }
@@ -146,8 +154,6 @@ export const UnpatchALL = Symbol('unpatchALL');
 
 /**
  * Adds a message handlers patch, also inits the patcher if it's the first patch
- * @example
- * patch("handleTapInviteEmbed", ([data]) => console.log(data));
  */
 export function patch(fn: KnownHandlers, callback: (args: any[]) => any) {
   if (!origGetParams) start();
@@ -164,12 +170,15 @@ export function patchInstead(fn: KnownHandlers, callback: (args: any[], original
   if (!origGetParams) start();
   let a = Symbol('patch');
   if (_handlers) {
-    patches.set(a, instead(fn, _handlers, callback));
+    patches.set(a, instead(fn, _handlers, function(this: any, args, orig) {
+      return callback(args, (...boundArgs: any[]) => orig.apply(this, boundArgs.length ? boundArgs : args));
+    }));
   } else {
     pendingPatches.set(a, [fn, callback, 'instead']);
   }
   return () => unpatch(a);
 }
+
 export function unpatch(patch: symbol) {
   if (patch == UnpatchALL) {
     for (let undo of patches.values()) undo();
