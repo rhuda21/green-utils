@@ -24,6 +24,9 @@ const SelectedGuildStore = findByStoreName("SelectedGuildStore") || findByProps(
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const alertModule = findByProps("showInputAlert");
 
+// Locate Discord's central layout rows processing manager
+const RowManager = findByProps("generateRows") || findByName("RowManager") || findByProps("updateRows");
+
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
 const unlockedImagesForGuild = new Set<string>();
@@ -68,41 +71,46 @@ function triggerImageUnlockPopup(guildId: string, callback: () => void) {
 }
 
 function patchImageBlocking(): void {
-  // 1. Force message content to flag attachments as spoilers
-  const createMessageContent = findByName("createMessageContent", false);
-  if (createMessageContent) {
-    const unpatchContent = before("default", createMessageContent, (args: any[]) => {
-      const content = args[0];
-      if (!content?.message || !content?.options) return;
+  // 1. Hook RowManager to strip out/spoil media details right before they render to the UI list
+  if (RowManager) {
+    const targetMethod = RowManager.generateRows ? "generateRows" : "updateRows";
+    if (typeof RowManager[targetMethod] === "function") {
+      const unpatchRows = before(targetMethod, RowManager, (args: any[]) => {
+        const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+        if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
 
-      const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-      if (!guildId) return;
-
-      if (pluginStorage.imageBlockList[guildId]) {
+        // If password control is mandatory and currently locked
         if (pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-          content.options.inlineEmbedMedia = false;
-          content.options.shouldObscureSpoiler = true;
-
-          if (content.message.attachments?.length) {
-            for (const attachment of content.message.attachments) {
-              attachment.spoiler = true;
-            }
-          }
-        } else if (!pluginStorage.imageLockRequirePassword) {
-          content.options.inlineEmbedMedia = false;
-          content.options.shouldObscureSpoiler = true;
-          if (content.message.attachments?.length) {
-            for (const attachment of content.message.attachments) {
-              attachment.spoiler = true;
+          const rows = args[0];
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              if (row?.message) {
+                row.inlineEmbedMedia = false;
+                row.shouldObscureSpoiler = true;
+                
+                if (row.message.attachments) {
+                  for (const att of row.message.attachments) {
+                    att.spoiler = true;
+                  }
+                }
+                if (row.message.embeds) {
+                  for (const emb of row.message.embeds) {
+                    emb.type = "link";
+                    delete emb.image;
+                    delete emb.video;
+                    delete emb.thumbnail;
+                  }
+                }
+              }
             }
           }
         }
-      }
-    });
-    patches.push(unpatchContent);
+      });
+      patches.push(unpatchRows);
+    }
   }
 
-  // 2. Wrap media viewer entry points completely to catch attachment taps
+  // 2. Wrap image viewer entry items completely to catch attachment interactions
   const MediaViewerModule = findByProps("openMediaViewer", "showMediaViewer") || findByProps("handleClickMedia");
   if (MediaViewerModule) {
     const methodsToPatch = ["openMediaViewer", "showMediaViewer", "handleClickMedia"];
