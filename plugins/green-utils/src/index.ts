@@ -1,4 +1,4 @@
-import { instead, before, after } from "@vendetta/patcher";
+import { instead, before } from "@vendetta/patcher";
 import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
@@ -23,9 +23,6 @@ pluginStorage.imageLockRequirePassword ??= false;
 const SelectedGuildStore = findByStoreName("SelectedGuildStore") || findByProps("getGuildId", "getLastSelectedGuildId");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const alertModule = findByProps("showInputAlert");
-
-// Try to find the spoiler configuration or media state modules directly
-const ObscureStore = findByProps("shouldObscureSpoiler") || findByProps("shouldCollapseMedia");
 
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
@@ -71,21 +68,7 @@ function triggerImageUnlockPopup(guildId: string, callback: () => void) {
 }
 
 function patchImageBlocking(): void {
-  // 1. Force the layout calculations to recognize everything as blurred/spoiler status dynamically
-  if (ObscureStore) {
-    const unpatchObscure = instead("shouldObscureSpoiler", ObscureStore, function(args, orig) {
-      const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-      if (guildId && pluginStorage.imageBlockList[guildId]) {
-        if (pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-          return true; // Force-keep the blur active
-        }
-      }
-      return orig.apply(this, args);
-    });
-    patches.push(unpatchObscure);
-  }
-
-  // 2. Intercept createMessageContent for handling general message asset data loads
+  // 1. Force message content to flag attachments as spoilers
   const createMessageContent = findByName("createMessageContent", false);
   if (createMessageContent) {
     const unpatchContent = before("default", createMessageContent, (args: any[]) => {
@@ -119,19 +102,23 @@ function patchImageBlocking(): void {
     patches.push(unpatchContent);
   }
 
-  // 3. Intercept tapping gestures on media cells to force-inject the password modal screen
-  const MediaViewerModule = findByProps("openMediaViewer", "showMediaViewer");
+  // 2. Wrap media viewer entry points completely to catch attachment taps
+  const MediaViewerModule = findByProps("openMediaViewer", "showMediaViewer") || findByProps("handleClickMedia");
   if (MediaViewerModule) {
-    const targetMethod = MediaViewerModule.openMediaViewer ? "openMediaViewer" : "showMediaViewer";
-    const unpatchMedia = instead(targetMethod, MediaViewerModule, function(args, orig) {
-      const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-      if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-        triggerImageUnlockPopup(guildId, () => orig.apply(this, args));
-        return;
+    const methodsToPatch = ["openMediaViewer", "showMediaViewer", "handleClickMedia"];
+    for (const method of methodsToPatch) {
+      if (typeof (MediaViewerModule as any)[method] === "function") {
+        const unpatchMedia = instead(method, MediaViewerModule, function(args, orig) {
+          const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+          if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
+            triggerImageUnlockPopup(guildId, () => orig.apply(this, args));
+            return;
+          }
+          return orig.apply(this, args);
+        });
+        patches.push(unpatchMedia);
       }
-      return orig.apply(this, args);
-    });
-    patches.push(unpatchMedia);
+    }
   }
 }
 
