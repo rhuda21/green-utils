@@ -179,7 +179,7 @@ export default function Settings() {
               <View style={s.rowTextContainer}>
                 <Text style={s.rowTitle}>Require Password for Image Previews</Text>
                 <Text style={s.rowSubtext}>
-                  When enabled, viewing filtered image assets will prompt for your server lock password instead of automatically revealing them.
+                  When enabled,viewing filtered image assets will prompt for your server lock password instead of automatically revealing them.
                 </Text>
               </View>
               <Switch 
