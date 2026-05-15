@@ -10,14 +10,14 @@ interface PluginStorage {
   imageBlockList: Record<string, boolean>;
   serverPasswords: Record<string, string>;
   serverLockList: Record<string, boolean>;
-  imageLockRequirePassword?: boolean;
+  imageLockRequirePassword: boolean;
 }
 
 const pluginStorage = storage as unknown as PluginStorage;
 
-pluginStorage.imageBlockList   ??= {};
-pluginStorage.serverPasswords  ??= {};
-pluginStorage.serverLockList   ??= {};
+pluginStorage.imageBlockList           ??= {};
+pluginStorage.serverPasswords          ??= {};
+pluginStorage.serverLockList           ??= {};
 pluginStorage.imageLockRequirePassword ??= false;
 
 const GuildStore = findByStoreName("GuildStore");
@@ -38,10 +38,40 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
+function handleUnlockImages(guildId: string): void {
+  const storedHash = pluginStorage.serverPasswords[guildId];
+  if (!storedHash) {
+    unlockedGuilds.add(guildId);
+    return;
+  }
+
+  const customAlert = alertModule?.showInputAlert;
+  if (customAlert) {
+    customAlert({
+      title: "Images Locked",
+      placeholder: "Enter server password...",
+      secureTextEntry: true,
+      confirmText: "Unlock",
+      cancelText: "Cancel",
+      onConfirm: (input: string) => {
+        if (simpleHash(input ?? "") === storedHash) {
+          unlockedGuilds.add(guildId);
+          Alert.alert("Success", "Images revealed.");
+        } else {
+          Alert.alert("Error", "Invalid Password");
+        }
+      }
+    });
+  } else {
+    // Basic structural fallback if layout alert is unavailable
+    Alert.alert("Unlock Required", "Please open the server lock configuration menu.");
+  }
+}
+
 function createActionObject(guildName: string, guildId: string, isLocked: boolean) {
   return {
-    text: isLocked ? "Unlock Server (greenUtils)" : "Lock Server (greenUtils)",
-    label: isLocked ? "Unlock Server (greenUtils)" : "Lock Server (greenUtils)",
+    text: isLocked ? "Unlock Server" : "Lock Server",
+    label: isLocked ? "Unlock Server" : "Lock Server",
     icon: isLocked ? "lock_open" : "lock",
     variant: isLocked ? "default" : "danger",
     onPress: () => {
@@ -49,53 +79,9 @@ function createActionObject(guildName: string, guildId: string, isLocked: boolea
         delete pluginStorage.serverLockList[guildId];
         delete pluginStorage.serverPasswords[guildId];
         unlockedGuilds.delete(guildId);
-        Alert.alert("Success", `Server "${guildName}" safety restrictions removed.`);
+        Alert.alert("Success", `Server "${guildName}" lock removed.`);
       } else {
-        const inputAlert = alertModule?.showInputAlert || (Alert as any).prompt;
-        if (!inputAlert) {
-          Alert.alert("Error", "No secure input popup discovered in this client version.");
-          return;
-        }
-
-        if (inputAlert.name === "showInputAlert" || !Object.hasOwn(Alert, "prompt")) {
-          inputAlert({
-            title: "Lock Entire Server",
-            placeholder: "Set encryption master key...",
-            secureTextEntry: true,
-            confirmText: "Lock Server",
-            cancelText: "Cancel",
-            onConfirm: (text: string) => {
-              if (!text || !text.trim()) {
-                Alert.alert("Error", "Passwords cannot be blank.");
-                return;
-              }
-              pluginStorage.serverLockList[guildId] = true;
-              pluginStorage.serverPasswords[guildId] = simpleHash(text);
-              Alert.alert("Success", `🔒 "${guildName}" layout is now protected.`);
-            }
-          });
-        } else {
-          (Alert as any).prompt(
-            "Lock Entire Server",
-            "Set encryption master key:",
-            [
-              { text: "Cancel" },
-              {
-                text: "Lock Server",
-                onPress: (text?: string) => {
-                  if (!text || !text.trim()) {
-                    Alert.alert("Error", "Passwords cannot be blank.");
-                    return;
-                  }
-                  pluginStorage.serverLockList[guildId] = true;
-                  pluginStorage.serverPasswords[guildId] = simpleHash(text);
-                  Alert.alert("Success", `🔒 "${guildName}" layout is now protected.`);
-                }
-              }
-            ],
-            "secure-text"
-          );
-        }
+        Alert.alert("Notice", "Configure password through greenUtils app settings panel.");
       }
     }
   };
@@ -182,6 +168,7 @@ function patchImageBlocking(): void {
     const guildId = channel?.guild_id;
 
     if (guildId && pluginStorage.imageBlockList[guildId]) {
+      // If image lock password option is true, completely block processing until decrypted
       if (pluginStorage.imageLockRequirePassword && !unlockedGuilds.has(guildId)) {
         content.options.inlineEmbedMedia = false;
         content.options.shouldObscureSpoiler = true;
@@ -202,6 +189,7 @@ function patchImageBlocking(): void {
           }
         }
       } else if (!pluginStorage.imageLockRequirePassword) {
+        // Standard blocking behavior (plain blur filters)
         content.options.inlineEmbedMedia = false;
         content.options.shouldObscureSpoiler = true;
         
@@ -226,6 +214,7 @@ function initializeChannelLockPatch(): void {
     const channel = ChannelStoreModule?.getChannel?.(channelId);
     const guildId = channel?.guild_id;
 
+    // Check against global server locks instead of individual channel lists
     if (guildId && pluginStorage.serverLockList[guildId] && !unlockedGuilds.has(guildId)) {
       return React.createElement(LockScreen, {
         guildId,
@@ -249,46 +238,25 @@ function LockScreen({ guildId, onUnlockCompleted }: any) {
 
   function handleUnlock() {
     const storedHash = pluginStorage.serverPasswords[guildId];
-    const alertPrompt = alertModule?.showInputAlert || (Alert as any).prompt;
+    const alertPrompt = alertModule?.showInputAlert;
     
     if (alertPrompt) {
-      if (typeof alertPrompt === "function" && alertPrompt.name === "showInputAlert") {
-        alertPrompt({
-          title: "Server Layout Restricted",
-          placeholder: "Enter credentials to unlock server channels:",
-          secureTextEntry: true,
-          confirmText: "Access Server",
-          cancelText: "Cancel",
-          onConfirm: (input: string) => {
-            if (simpleHash(input ?? "") === storedHash) {
-              onUnlockCompleted();
-            } else {
-              Alert.alert("Error", "Invalid Security Credentials");
-            }
+      alertPrompt({
+        title: "Server Locked",
+        placeholder: "Enter password...",
+        secureTextEntry: true,
+        confirmText: "Unlock",
+        cancelText: "Cancel",
+        onConfirm: (input: string) => {
+          if (simpleHash(input ?? "") === storedHash) {
+            onUnlockCompleted();
+          } else {
+            Alert.alert("Error", "Invalid Password");
           }
-        });
-      } else {
-        (Alert as any).prompt(
-          "Server Layout Restricted",
-          "Enter credentials to unlock server channels:",
-          [
-            { text: "Cancel" },
-            {
-              text: "Access Server",
-              onPress: (input?: string) => {
-                if (simpleHash(input ?? "") === storedHash) {
-                  onUnlockCompleted();
-                } else {
-                  Alert.alert("Error", "Invalid Security Credentials");
-                }
-              }
-            }
-          ],
-          "secure-text"
-        );
-      }
+        }
+      });
     } else {
-      Alert.alert("Device Error", "Failed to compile security prompt layers.");
+      Alert.alert("Error", "Input context wrapper lost. Please reload.");
     }
   }
 
@@ -296,10 +264,10 @@ function LockScreen({ guildId, onUnlockCompleted }: any) {
     View, { style: styles.container },
     React.createElement(Text, { style: styles.icon }, "🔒"),
     React.createElement(Text, { style: styles.title }, "Server Locked"),
-    React.createElement(Text, { style: styles.subtitle }, "Access to this server's internal framework is restricted behind a master gateway wall."),
+    React.createElement(Text, { style: styles.subtitle }, "This server is locked behind a password."),
     React.createElement(
       TouchableOpacity, { style: styles.btn, onPress: handleUnlock },
-      React.createElement(Text, { style: styles.btnText }, "Decrypt Server")
+      React.createElement(Text, { style: styles.btnText }, "Enter Password")
     )
   );
 }
