@@ -1,4 +1,4 @@
-import { instead, before } from "@vendetta/patcher";
+import { instead, before, after } from "@vendetta/patcher";
 import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
@@ -21,6 +21,8 @@ pluginStorage.channelLockList  ??= {};
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStoreModule = findByProps("getLastSelectedChannelId") || findByProps("getChannel", "getGuildChannels");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
+const ContextMenuActions = findByProps("openContextMenu", "lazyRenderContextMenu");
+const alertModule = findByProps("showInputAlert");
 
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
@@ -44,7 +46,7 @@ function handleUnlockGuildImages(guildId: string): void {
     return;
   }
 
-  const customAlert = findByProps("showInputAlert")?.showInputAlert;
+  const customAlert = alertModule?.showInputAlert;
 
   if (customAlert) {
     customAlert({
@@ -143,6 +145,95 @@ function initializeChannelLockPatch(): void {
   patches.push(unpatch);
 }
 
+function patchChannelHoldMenu(): void {
+  if (!ContextMenuActions) return;
+
+  const unpatch = after("openContextMenu", ContextMenuActions, (args) => {
+    const [, menuConfig] = args;
+    if (!menuConfig || typeof menuConfig !== "object") return;
+
+    const channelId = menuConfig.channelId || menuConfig.channel?.id;
+    if (!channelId) return;
+
+    const channel = ChannelStoreModule?.getChannel?.(channelId);
+    if (!channel || (channel.type !== 0 && channel.type !== 2)) return;
+
+    if (!menuConfig.sections && menuConfig.actions) {
+      menuConfig.sections = [{ items: menuConfig.actions }];
+    }
+    if (!menuConfig.sections) menuConfig.sections = [];
+
+    const isLocked = !!pluginStorage.channelLockList?.[channelId];
+
+    const secureLockAction = {
+      text: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
+      icon: isLocked ? "lock_open" : "lock",
+      variant: isLocked ? "default" : "danger",
+      onPress: () => {
+        if (isLocked) {
+          delete pluginStorage.channelLockList[channelId];
+          delete pluginStorage.channelPasswords[channelId];
+          Alert.alert("Success", `Channel #${channel.name} unlocked completely.`);
+        } else {
+          const inputAlert = alertModule?.showInputAlert || (Alert as any).prompt;
+          if (!inputAlert) {
+            Alert.alert("Error", "No secure input popup discovered in this client version.");
+            return;
+          }
+
+          if (inputAlert.name === "showInputAlert" || !Object.hasOwn(Alert, "prompt")) {
+            inputAlert({
+              title: "Lock Secure Channel",
+              placeholder: "Set protection key text...",
+              secureTextEntry: true,
+              confirmText: "Apply Lock",
+              cancelText: "Cancel",
+              onConfirm: (text: string) => {
+                if (!text || !text.trim()) {
+                  Alert.alert("Error", "Passwords cannot be blank.");
+                  return;
+                }
+                pluginStorage.channelLockList[channelId] = true;
+                pluginStorage.channelPasswords[channelId] = simpleHash(text);
+                Alert.alert("Success", `🔒 #${channel.name} is now protected.`);
+              }
+            });
+          } else {
+            (Alert as any).prompt(
+              "Lock Secure Channel",
+              "Set protection key text:",
+              [
+                { text: "Cancel" },
+                {
+                  text: "Apply Lock",
+                  onPress: (text?: string) => {
+                    if (!text || !text.trim()) {
+                      Alert.alert("Error", "Passwords cannot be blank.");
+                      return;
+                    }
+                    pluginStorage.channelLockList[channelId] = true;
+                    pluginStorage.channelPasswords[channelId] = simpleHash(text);
+                    Alert.alert("Success", `🔒 #${channel.name} is now protected.`);
+                  }
+                }
+              ],
+              "secure-text"
+            );
+          }
+        }
+      }
+    };
+
+    if (menuConfig.sections[0]?.items) {
+      menuConfig.sections[0].items.push(secureLockAction);
+    } else {
+      menuConfig.sections.push({ items: [secureLockAction] });
+    }
+  });
+
+  patches.push(unpatch);
+}
+
 function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
@@ -155,7 +246,7 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
 
   function handleUnlock() {
     const storedHash = pluginStorage.channelPasswords[channelId];
-    const alertPrompt = (Alert as any).prompt || findByProps("showInputAlert")?.showInputAlert;
+    const alertPrompt = alertModule?.showInputAlert || (Alert as any).prompt;
     
     if (alertPrompt) {
       if (typeof alertPrompt === "function" && alertPrompt.name === "showInputAlert") {
@@ -218,6 +309,7 @@ export default {
       try {
         patchImageBlocking();
         initializeChannelLockPatch();
+        patchChannelHoldMenu();
       } catch (e) {
         console.error(e);
       }
