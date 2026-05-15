@@ -21,7 +21,7 @@ pluginStorage.channelLockList  ??= {};
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStoreModule = findByProps("getLastSelectedChannelId") || findByProps("getChannel", "getGuildChannels");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
-const ContextMenuActions = findByProps("openContextMenu", "lazyRenderContextMenu");
+const ContextMenuActions = findByProps("openContextMenu") || findByProps("showContextMenu") || findByProps("openActionSheet");
 const alertModule = findByProps("showInputAlert");
 
 const patches: (() => void)[] = [];
@@ -148,11 +148,16 @@ function initializeChannelLockPatch(): void {
 function patchChannelHoldMenu(): void {
   if (!ContextMenuActions) return;
 
-  const unpatch = after("openContextMenu", ContextMenuActions, (args) => {
+  const targetMethod = ["openContextMenu", "showContextMenu", "openActionSheet", "default"].find(
+    (m) => m in ContextMenuActions
+  );
+  if (!targetMethod) return;
+
+  const unpatch = after(targetMethod as any, ContextMenuActions, (args) => {
     const [, menuConfig] = args;
     if (!menuConfig || typeof menuConfig !== "object") return;
 
-    const channelId = menuConfig.channelId || menuConfig.channel?.id;
+    const channelId = menuConfig.channelId || menuConfig.channel?.id || menuConfig.id;
     if (!channelId) return;
 
     const channel = ChannelStoreModule?.getChannel?.(channelId);
@@ -161,12 +166,16 @@ function patchChannelHoldMenu(): void {
     if (!menuConfig.sections && menuConfig.actions) {
       menuConfig.sections = [{ items: menuConfig.actions }];
     }
+    if (!menuConfig.options && menuConfig.sections) {
+      menuConfig.options = menuConfig.sections;
+    }
     if (!menuConfig.sections) menuConfig.sections = [];
 
     const isLocked = !!pluginStorage.channelLockList?.[channelId];
 
     const secureLockAction = {
       text: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
+      label: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
       icon: isLocked ? "lock_open" : "lock",
       variant: isLocked ? "default" : "danger",
       onPress: () => {
@@ -226,6 +235,8 @@ function patchChannelHoldMenu(): void {
 
     if (menuConfig.sections[0]?.items) {
       menuConfig.sections[0].items.push(secureLockAction);
+    } else if (Array.isArray(menuConfig.options)) {
+      menuConfig.options.push(secureLockAction);
     } else {
       menuConfig.sections.push({ items: [secureLockAction] });
     }
