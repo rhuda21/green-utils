@@ -185,17 +185,34 @@ function handleInviteFileAction(args, originalFunction) {
 
 function patchMessageHandlers(): void {
   webhookLog("patchMessageHandlers called", {
-    MessageHandlersExists: !!MessageHandlers,
     MessageHandlersKeys: MessageHandlers ? Object.keys(MessageHandlers) : null,
   });
 
-  const unpatchTap = MessageHandlers.patchInstead("handleTapInviteEmbed", handleInviteFileAction);
-  webhookLog("patched handleTapInviteEmbed", { success: !!unpatchTap });
+  // Log ALL available methods so we can see what exists
+  if (MessageHandlers) {
+    const allKeys = Object.keys(MessageHandlers);
+    webhookLog("ALL MessageHandlers methods", { allKeys });
+  }
 
-  const unpatchAccept = MessageHandlers.patchInstead("handleTapInviteEmbedAccept", handleInviteFileAction);
-  webhookLog("patched handleTapInviteEmbedAccept", { success: !!unpatchAccept });
-
-  patches.push(unpatchTap, unpatchAccept);
+  // Patch EVERY method on MessageHandlers and log which one fires on tap
+  if (MessageHandlers) {
+    Object.keys(MessageHandlers).forEach((key) => {
+      if (typeof MessageHandlers[key] === "function") {
+        try {
+          const unpatch = MessageHandlers.patchInstead(key, (args, orig) => {
+            webhookLog(`MessageHandlers.${key} FIRED`, {
+              arg0Keys: args?.[0] ? Object.keys(args[0]) : null,
+              hasCodedLink: !!args?.[0]?.codedLink || !!args?.[1]?.codedLink,
+            });
+            return orig(...args);
+          });
+          patches.push(unpatch);
+        } catch (e) {
+          webhookLog(`failed to patch MessageHandlers.${key}`, { error: String(e) });
+        }
+      }
+    });
+  }
 }
 
 function patchRowManager(): void {
