@@ -146,18 +146,8 @@ function initializeChannelLockPatch(): void {
   patches.push(unpatch);
 }
 
-function injectLockAction(menuConfig: any) {
-  if (!menuConfig || typeof menuConfig !== "object") return;
-
-  const channelId = menuConfig.channelId || menuConfig.channel?.id || menuConfig.id;
-  if (!channelId) return;
-
-  const channel = ChannelStoreModule?.getChannel?.(channelId);
-  if (!channel || (channel.type !== 0 && channel.type !== 2)) return;
-
-  const isLocked = !!pluginStorage.channelLockList?.[channelId];
-
-  const secureLockAction = {
+function createActionObject(channel: any, channelId: string, isLocked: boolean) {
+  return {
     text: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
     label: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
     icon: isLocked ? "lock_open" : "lock",
@@ -216,40 +206,60 @@ function injectLockAction(menuConfig: any) {
       }
     }
   };
-
-  if (Array.isArray(menuConfig.options)) {
-    menuConfig.options.push(secureLockAction);
-  } else if (Array.isArray(menuConfig.items)) {
-    menuConfig.items.push(secureLockAction);
-  } else if (menuConfig.sections && menuConfig.sections[0]?.items) {
-    menuConfig.sections[0].items.push(secureLockAction);
-  } else if (menuConfig.actions) {
-    if (Array.isArray(menuConfig.actions)) {
-      menuConfig.actions.push(secureLockAction);
-    } else {
-      menuConfig.sections = [{ items: [secureLockAction] }];
-    }
-  } else {
-    menuConfig.sections = [{ items: [secureLockAction] }];
-  }
 }
 
 function patchChannelHoldMenu(): void {
   if (ContextMenuModule) {
-    const methodsToPatch = ["openContextMenu", "openContextMenuLazy"].filter(m => m in ContextMenuModule);
-    for (const method of methodsToPatch) {
-      const unpatch = after(method as any, ContextMenuModule, (args) => {
-        const [, menuConfig] = args;
-        injectLockAction(menuConfig);
+    const methods = ["openContextMenu", "openContextMenuLazy"].filter(m => m in ContextMenuModule);
+    for (const method of methods) {
+      const unpatch = instead(method as any, ContextMenuModule, function (args, orig) {
+        const [,, renderOptions] = args;
+        if (renderOptions && typeof renderOptions === "object") {
+          const channelId = renderOptions.channelId || renderOptions.channel?.id || renderOptions.id;
+          if (channelId) {
+            const channel = ChannelStoreModule?.getChannel?.(channelId);
+            if (channel && (channel.type === 0 || channel.type === 2)) {
+              const isLocked = !!pluginStorage.channelLockList?.[channelId];
+              const customAction = createActionObject(channel, channelId, isLocked);
+              
+              if (Array.isArray(renderOptions.actions)) {
+                renderOptions.actions.push(customAction);
+              } else if (Array.isArray(renderOptions.sections?.[0]?.items)) {
+                renderOptions.sections[0].items.push(customAction);
+              } else {
+                renderOptions.sections = [{ items: [customAction] }];
+              }
+            }
+          }
+        }
+        return orig.apply(this, args);
       });
       patches.push(unpatch);
     }
   }
 
   if (ActionSheetModule && "openActionSheet" in ActionSheetModule) {
-    const unpatch = after("openActionSheet", ActionSheetModule, (args) => {
-      const [, , menuConfig] = args;
-      injectLockAction(menuConfig);
+    const unpatch = instead("openActionSheet", ActionSheetModule, function (args, orig) {
+      const [,, config] = args;
+      if (config && typeof config === "object") {
+        const channelId = config.channelId || config.channel?.id || config.id;
+        if (channelId) {
+          const channel = ChannelStoreModule?.getChannel?.(channelId);
+          if (channel && (channel.type === 0 || channel.type === 2)) {
+            const isLocked = !!pluginStorage.channelLockList?.[channelId];
+            const customAction = createActionObject(channel, channelId, isLocked);
+
+            if (Array.isArray(config.options)) {
+              config.options.push(customAction);
+            } else if (Array.isArray(config.items)) {
+              config.items.push(customAction);
+            } else if (Array.isArray(config.actions)) {
+              config.actions.push(customAction);
+            }
+          }
+        }
+      }
+      return orig.apply(this, args);
     });
     patches.push(unpatch);
   }
