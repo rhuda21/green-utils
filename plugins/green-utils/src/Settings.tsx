@@ -1,13 +1,14 @@
 import { storage } from "@vendetta/plugin";
 import { findByProps, findByStoreName } from "@vendetta/metro";
 import { React, ReactNative } from "@vendetta/metro/common";
-import { Forms } from "@vendetta/ui/components";
 
 const { ScrollView, Text, View, Switch, StyleSheet, TouchableOpacity, Alert } = ReactNative;
-const { FormInput } = Forms;
 
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
+const ChannelPropsFallback = findByProps("getChannel", "getGuildChannels") || findByProps("getMutableGuildChannelsAll");
+
+const alerts = findByProps("showInputAlert");
 
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
@@ -46,7 +47,6 @@ const s = StyleSheet.create({
   rowTitle: { color: "#f2f3f5", fontSize: 16, fontWeight: "600" },
   rowSubtext: { color: "#949ba4", fontSize: 12, marginTop: 4, lineHeight: 16 },
   divider: { height: 1, backgroundColor: "#3f4147", marginVertical: 16 },
-  inputWrapper: { backgroundColor: "#1e1f22", borderRadius: 8, padding: 4, marginBottom: 16 },
   channelListHead: { color: "#f2f3f5", fontSize: 14, fontWeight: "700", marginBottom: 12 },
   channelItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12 },
   channelDivider: { height: 1, backgroundColor: "#35373c" },
@@ -61,13 +61,12 @@ const s = StyleSheet.create({
 export default function Settings() {
   const guilds = React.useMemo(() => (GuildStore?.getGuilds ? Object.values(GuildStore.getGuilds()) : []) as any[], []);
   const [selectedGuildId, setSelectedGuildId] = React.useState<string>(guilds[0]?.id || "");
-  const [passwordInput, setPasswordInput] = React.useState("");
   const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
 
   const activeChannels = React.useMemo(() => {
     if (!selectedGuildId) return [];
     
-    const getChannelsModule = findByProps("getChannels") || findByProps("getGuildChannels");
+    const getChannelsModule = findByProps("getChannels") || findByProps("getGuildChannels") || ChannelPropsFallback;
     if (getChannelsModule) {
       const channelData = getChannelsModule.getChannels?.(selectedGuildId) || getChannelsModule.getGuildChannels?.(selectedGuildId);
       if (channelData && typeof channelData === "object") {
@@ -78,6 +77,11 @@ export default function Settings() {
 
     if (ChannelStore?.getMutableGuildChannelsAll) {
       const allChannels = Object.values(ChannelStore.getMutableGuildChannelsAll());
+      return allChannels.filter((c: any) => c && c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
+    }
+
+    if (ChannelPropsFallback?.getMutableGuildChannelsAll) {
+      const allChannels = Object.values(ChannelPropsFallback.getMutableGuildChannelsAll());
       return allChannels.filter((c: any) => c && c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
     }
 
@@ -97,14 +101,29 @@ export default function Settings() {
       delete pluginStorage.channelPasswords[channelId];
       forceUpdate();
     } else {
-      if (!passwordInput.trim()) {
-        Alert.alert("Password Required", "Please enter a password before locking this channel.");
+      const targetAlert = alerts?.showInputAlert || (Alert as any).prompt;
+
+      if (!targetAlert) {
+        Alert.alert("Error", "No secure input API detected on this device configuration.");
         return;
       }
-      pluginStorage.channelLockList[channelId] = true;
-      pluginStorage.channelPasswords[channelId] = simpleHash(passwordInput);
-      setPasswordInput("");
-      forceUpdate();
+
+      targetAlert({
+        title: "Create Lock Rule",
+        placeholder: "Set protection key...",
+        secureTextEntry: true,
+        confirmText: "Lock Channel",
+        cancelText: "Cancel",
+        onConfirm: (input: string) => {
+          if (!input || !input.trim()) {
+            Alert.alert("Failed", "Password cannot be left blank.");
+            return;
+          }
+          pluginStorage.channelLockList[channelId] = true;
+          pluginStorage.channelPasswords[channelId] = simpleHash(input);
+          forceUpdate();
+        }
+      });
     }
   }
 
@@ -159,16 +178,6 @@ export default function Settings() {
             <View style={s.divider} />
 
             <Text style={s.channelListHead}>Channel Privacy Blocks</Text>
-            
-            <View style={s.inputWrapper}>
-              <FormInput
-                title="LOCK PROTECTION PASSWORD"
-                placeholder="Type password key, then toggle a channel switch below..."
-                secureTextEntry={true}
-                value={passwordInput}
-                onChange={(v: string) => setPasswordInput(v)}
-              />
-            </View>
 
             {activeChannels.length === 0 ? (
               <Text style={s.noChannels}>No supported text or voice channels inside this guild environment.</Text>

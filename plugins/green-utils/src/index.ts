@@ -19,11 +19,12 @@ pluginStorage.channelPasswords ??= {};
 pluginStorage.channelLockList  ??= {};
 
 const GuildStore = findByStoreName("GuildStore");
-const ChannelStore = findByStoreName("ChannelStore");
+const ChannelStoreModule = findByProps("getLastSelectedChannelId") || findByProps("getChannel", "getGuildChannels");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
+const unlockedGuildImages = new Set<string>();
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -31,6 +32,55 @@ function simpleHash(str: string): string {
     h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
   }
   return h.toString(16);
+}
+
+function handleUnlockGuildImages(guildId: string): void {
+  const channelId = ChannelStoreModule?.getLastSelectedChannelId?.();
+  if (!channelId) return;
+
+  const storedHash = pluginStorage.channelPasswords[channelId];
+  if (!storedHash) {
+    unlockedGuildImages.add(guildId);
+    return;
+  }
+
+  const customAlert = findByProps("showInputAlert")?.showInputAlert;
+
+  if (customAlert) {
+    customAlert({
+      title: "Images Locked",
+      placeholder: "Enter active channel password...",
+      secureTextEntry: true,
+      confirmText: "Unlock",
+      cancelText: "Cancel",
+      onConfirm: (input: string) => {
+        if (simpleHash(input ?? "") === storedHash) {
+          unlockedGuildImages.add(guildId);
+        } else {
+          Alert.alert("Error", "Invalid Password Token");
+        }
+      }
+    });
+  } else if ((Alert as any).prompt) {
+    (Alert as any).prompt(
+      "Images Locked",
+      "Enter active channel password to temporarily reveal server media:",
+      [
+        { text: "Cancel" },
+        {
+          text: "Unlock",
+          onPress: (input?: string) => {
+            if (simpleHash(input ?? "") === storedHash) {
+              unlockedGuildImages.add(guildId);
+            } else {
+              Alert.alert("Error", "Invalid Password Token");
+            }
+          }
+        }
+      ],
+      "secure-text"
+    );
+  }
 }
 
 function patchImageBlocking(): void {
@@ -46,7 +96,7 @@ function patchImageBlocking(): void {
     const channel = getChannel(content.message.channel_id);
     const guildId = channel?.guild_id;
 
-    if (guildId && pluginStorage.imageBlockList[guildId]) {
+    if (guildId && pluginStorage.imageBlockList[guildId] && !unlockedGuildImages.has(guildId)) {
       content.options.inlineEmbedMedia = false;
       content.options.shouldObscureSpoiler = true;
 
@@ -60,7 +110,10 @@ function patchImageBlocking(): void {
 
       if (message?.embeds?.length) {
         for (const embed of message.embeds) {
-          embed.type = "image_blocked_by_guard"; 
+          embed.type = "link";
+          delete embed.image;
+          delete embed.video;
+          delete embed.thumbnail;
         }
       }
     }
@@ -70,12 +123,12 @@ function patchImageBlocking(): void {
 }
 
 function initializeChannelLockPatch(): void {
-  if (!ChannelView || !ChannelStore) return;
+  if (!ChannelView || !ChannelStoreModule) return;
 
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
 
   const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
-    const channelId = ChannelStore.getLastSelectedChannelId?.();
+    const channelId = ChannelStoreModule.getLastSelectedChannelId?.();
 
     if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
       return React.createElement(LockScreen, {
@@ -105,24 +158,41 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
     const alertPrompt = (Alert as any).prompt || findByProps("showInputAlert")?.showInputAlert;
     
     if (alertPrompt) {
-      alertPrompt(
-        "Channel Locked",
-        "Enter password to unlock chat access:",
-        [
-          { text: "Cancel" },
-          {
-            text: "Unlock",
-            onPress: (input?: string) => {
-              if (simpleHash(input ?? "") === storedHash) {
-                onUnlockCompleted();
-              } else {
-                Alert.alert("Error", "Invalid Password Configuration");
-              }
+      if (typeof alertPrompt === "function" && alertPrompt.name === "showInputAlert") {
+        alertPrompt({
+          title: "Channel Locked",
+          placeholder: "Enter password to unlock chat access:",
+          secureTextEntry: true,
+          confirmText: "Unlock",
+          cancelText: "Cancel",
+          onConfirm: (input: string) => {
+            if (simpleHash(input ?? "") === storedHash) {
+              onUnlockCompleted();
+            } else {
+              Alert.alert("Error", "Invalid Password Configuration");
             }
           }
-        ],
-        "secure-text"
-      );
+        });
+      } else {
+        (Alert as any).prompt(
+          "Channel Locked",
+          "Enter password to unlock chat access:",
+          [
+            { text: "Cancel" },
+            {
+              text: "Unlock",
+              onPress: (input?: string) => {
+                if (simpleHash(input ?? "") === storedHash) {
+                  onUnlockCompleted();
+                } else {
+                  Alert.alert("Error", "Invalid Password Configuration");
+                }
+              }
+            }
+          ],
+          "secure-text"
+        );
+      }
     } else {
       Alert.alert("Device Error", "Unable to map prompt interfaces. Lift block thresholds in Settings.");
     }
@@ -158,5 +228,6 @@ export default {
     patches.forEach((p) => p());
     patches.length = 0;
     unlockedChannels.clear();
+    unlockedGuildImages.clear();
   },
 };
