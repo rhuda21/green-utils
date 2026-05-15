@@ -7,7 +7,7 @@
       "id": "0"
     }
   ],
-  "main": "dist/index.js",
+  "main": "src/index.ts",
   "hash": "sha256_hash_of_your_bundle_her",
   "url": "https://raw.githubusercontent.com/rhuda21/green-utils/main/index.js"
 }

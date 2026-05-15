@@ -1,16 +1,32 @@
 {
-  "name": "green-utils",
-  "version": "1.0.0",
-  "description": "Custom utilities for Revenge/Bunny app.",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "rollup -c",
-    "watch": "rollup -c -w"
-  },
-  "devDependencies": {
-    "@rollup/plugin-commonjs": "^29.0.2",
-    "@rollup/plugin-node-resolve": "^15.2.3",
-    "rollup": "^4.9.6",
-    "rollup-plugin-esbuild": "^6.1.1"
-  }
+	"private": true,
+	"scripts": {
+		"build": "node build.mjs"
+	},
+	"dependencies": {
+		"@swc/helpers": "^0.5.17",
+		"swc": "^1.0.11"
+	},
+	"devDependencies": {
+		"@rollup/plugin-commonjs": "^24.0.0",
+		"@rollup/plugin-node-resolve": "^15.0.1",
+		"@rollup/plugin-url": "latest",
+		"@swc/core": "^1.3.35",
+		"esbuild": "^0.16.14",
+		"rollup": "^3.30.0",
+		"rollup-plugin-esbuild": "^5.0.0",
+		"vendetta-types": "^2.4.21"
+	},
+	"pnpm": {
+		"peerDependencyRules": {
+			"ignoreMissing": [
+				"react",
+				"react-native"
+			]
+		},
+		"onlyBuiltDependencies": [
+			"@swc/core",
+			"esbuild"
+		]
+	}
 }
