@@ -8,6 +8,6 @@
     }
   ],
   "main": "src/index.ts",
-  "hash": "sha256_hash_of_your_bundle_her",
+  "hash": "s",
   "url": "https://raw.githubusercontent.com/rhuda21/green-utils/main/index.js"
 }
