@@ -80,13 +80,27 @@ function makeRPL(attachment, shouldObscure: boolean) {
     splashUrl: null,
     noParticipantsText: displayFilename,
     ctaEnabled: true,
+    // Keep a secure backup of the original attachment data inside the layout item
+    rawAttachment: attachment
   };
 }
 
 function handleInviteFileAction(args, originalFunction) {
   const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
   
-  // Guard clause: intercept tap interaction if images are password locked
+  const executeOriginal = () => {
+    // Reconstruct attachment layout context if RowManager cleared it out
+    const nativeEvent = args[0]?.nativeEvent ?? args[0];
+    if (nativeEvent && !nativeEvent.message?.attachments?.length) {
+      const codedLink = nativeEvent.codedLink;
+      if (codedLink?.rawAttachment) {
+        nativeEvent.message ??= {};
+        nativeEvent.message.attachments = [codedLink.rawAttachment];
+      }
+    }
+    return originalFunction(...args);
+  };
+
   if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
     const storedHash = pluginStorage.serverPasswords[guildId];
     const customAlert = alertModule?.showInputAlert;
@@ -101,7 +115,7 @@ function handleInviteFileAction(args, originalFunction) {
         onConfirm: (input: string) => {
           if (simpleHash(input ?? "") === storedHash) {
             unlockedImagesForGuild.add(guildId);
-            originalFunction(...args); // Run original layout event handling securely on validation success
+            executeOriginal();
           } else {
             Alert.alert("Error", "Invalid Password");
           }
@@ -111,11 +125,10 @@ function handleInviteFileAction(args, originalFunction) {
     }
   }
 
-  return originalFunction(...args);
+  return executeOriginal();
 }
 
 function patchMessageHandlers(): void {
-  // Hook the interactive embed targets using your exact MessageHandlers utility architecture
   const unpatchTap = MessageHandlers.patchInstead("handleTapInviteEmbed", handleInviteFileAction);
   const unpatchAccept = MessageHandlers.patchInstead("handleTapInviteEmbedAccept", handleInviteFileAction);
   patches.push(unpatchTap, unpatchAccept);
@@ -250,6 +263,6 @@ export default {
     patches.length = 0;
     unlockedGuilds.clear();
     unlockedImagesForGuild.clear();
-    MessageHandlers.unpatch(MessageHandlers.UnpatchALL); // Cleanly unload your patcher components
+    MessageHandlers.unpatch(MessageHandlers.UnpatchALL);
   },
 };
