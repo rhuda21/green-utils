@@ -1,0 +1,13 @@
+{
+  "name": "GreenUtils",
+  "description": "A bunch of custom utilities for revenge app.",
+  "authors": [
+    {
+      "name": "nitwitmc",
+      "id": "0"
+    }
+  ],
+  "main": "index.js",
+  "hash": "sha256_hash_of_your_bundle_here",
+  "url": "https://raw.githubusercontent.com/rhuda21/greenutils/main/index.js"
+}
