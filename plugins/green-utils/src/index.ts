@@ -182,8 +182,7 @@ function patchChannelLock(): void {
 
 // ─── Plugin lifecycle ─────────────────────────────────────────
 export default {
-  // Modern way to register your Settings view component safely 
-  settingsView: Settings,
+  settings: Settings,
 
   onLoad() {
     patchImageBlocking();
