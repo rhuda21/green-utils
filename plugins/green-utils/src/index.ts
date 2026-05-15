@@ -146,7 +146,7 @@ function initializeChannelLockPatch(): void {
   patches.push(unpatch);
 }
 
-function createActionObject(channel: any, channelId: string, isLocked: boolean) {
+function createActionObject(channelName: string, channelId: string, isLocked: boolean) {
   return {
     text: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
     label: isLocked ? "Unlock (greenUtils)" : "Lock (greenUtils)",
@@ -156,7 +156,7 @@ function createActionObject(channel: any, channelId: string, isLocked: boolean) 
       if (isLocked) {
         delete pluginStorage.channelLockList[channelId];
         delete pluginStorage.channelPasswords[channelId];
-        Alert.alert("Success", `Channel #${channel.name} unlocked completely.`);
+        Alert.alert("Success", `Channel #${channelName} unlocked completely.`);
       } else {
         const inputAlert = alertModule?.showInputAlert || (Alert as any).prompt;
         if (!inputAlert) {
@@ -178,7 +178,7 @@ function createActionObject(channel: any, channelId: string, isLocked: boolean) 
               }
               pluginStorage.channelLockList[channelId] = true;
               pluginStorage.channelPasswords[channelId] = simpleHash(text);
-              Alert.alert("Success", `🔒 #${channel.name} is now protected.`);
+              Alert.alert("Success", `🔒 #${channelName} is now protected.`);
             }
           });
         } else {
@@ -196,7 +196,7 @@ function createActionObject(channel: any, channelId: string, isLocked: boolean) 
                   }
                   pluginStorage.channelLockList[channelId] = true;
                   pluginStorage.channelPasswords[channelId] = simpleHash(text);
-                  Alert.alert("Success", `🔒 #${channel.name} is now protected.`);
+                  Alert.alert("Success", `🔒 #${channelName} is now protected.`);
                 }
               }
             ],
@@ -218,17 +218,16 @@ function patchChannelHoldMenu(): void {
           const channelId = renderOptions.channelId || renderOptions.channel?.id || renderOptions.id;
           if (channelId) {
             const channel = ChannelStoreModule?.getChannel?.(channelId);
-            if (channel && (channel.type === 0 || channel.type === 2)) {
-              const isLocked = !!pluginStorage.channelLockList?.[channelId];
-              const customAction = createActionObject(channel, channelId, isLocked);
-              
-              if (Array.isArray(renderOptions.actions)) {
-                renderOptions.actions.push(customAction);
-              } else if (Array.isArray(renderOptions.sections?.[0]?.items)) {
-                renderOptions.sections[0].items.push(customAction);
-              } else {
-                renderOptions.sections = [{ items: [customAction] }];
-              }
+            const channelName = channel?.name || "Channel";
+            const isLocked = !!pluginStorage.channelLockList?.[channelId];
+            const customAction = createActionObject(channelName, channelId, isLocked);
+            
+            if (Array.isArray(renderOptions.actions)) {
+              renderOptions.actions.push(customAction);
+            } else if (Array.isArray(renderOptions.sections?.[0]?.items)) {
+              renderOptions.sections[0].items.push(customAction);
+            } else {
+              renderOptions.sections = [{ items: [customAction] }];
             }
           }
         }
@@ -245,17 +244,16 @@ function patchChannelHoldMenu(): void {
         const channelId = config.channelId || config.channel?.id || config.id;
         if (channelId) {
           const channel = ChannelStoreModule?.getChannel?.(channelId);
-          if (channel && (channel.type === 0 || channel.type === 2)) {
-            const isLocked = !!pluginStorage.channelLockList?.[channelId];
-            const customAction = createActionObject(channel, channelId, isLocked);
+          const channelName = channel?.name || "Channel";
+          const isLocked = !!pluginStorage.channelLockList?.[channelId];
+          const customAction = createActionObject(channelName, channelId, isLocked);
 
-            if (Array.isArray(config.options)) {
-              config.options.push(customAction);
-            } else if (Array.isArray(config.items)) {
-              config.items.push(customAction);
-            } else if (Array.isArray(config.actions)) {
-              config.actions.push(customAction);
-            }
+          if (Array.isArray(config.options)) {
+            config.options.push(customAction);
+          } else if (Array.isArray(config.items)) {
+            config.items.push(customAction);
+          } else if (Array.isArray(config.actions)) {
+            config.actions.push(customAction);
           }
         }
       }
