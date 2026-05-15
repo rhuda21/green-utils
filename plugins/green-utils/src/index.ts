@@ -1,8 +1,9 @@
-import { instead, before } from "@vendetta/patcher";
-import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
+import { instead, after } from "@vendetta/patcher";
+import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
+import MessageHandlers from "./utils/MessageHandlersPatcher";
 
 const { Text, View, TouchableOpacity, StyleSheet, Alert } = ReactNative;
 
@@ -20,12 +21,16 @@ pluginStorage.serverPasswords          ??= {};
 pluginStorage.serverLockList           ??= {};
 pluginStorage.imageLockRequirePassword ??= false;
 
+// Discord Core Stores
 const SelectedGuildStore = findByStoreName("SelectedGuildStore") || findByProps("getGuildId", "getLastSelectedGuildId");
+const ThemeStore = findByStoreName("ThemeStore");
+
+// Discord Core Modules & View Components
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const alertModule = findByProps("showInputAlert");
-
-// Locate Discord's central layout rows processing manager
-const RowManager = findByProps("generateRows") || findByName("RowManager") || findByProps("updateRows");
+const RowManager = findByName("RowManager");
+const getEmbedThemeColors = findByName("getEmbedThemeColors");
+const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExtendedType ?? { EMBEDDED_ACTIVITY_INVITE: 3 };
 
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
@@ -39,102 +44,119 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-function triggerImageUnlockPopup(guildId: string, callback: () => void) {
-  const storedHash = pluginStorage.serverPasswords[guildId];
-  if (!storedHash) {
-    unlockedImagesForGuild.add(guildId);
-    callback();
-    return;
-  }
-
-  const customAlert = alertModule?.showInputAlert;
-  if (customAlert) {
-    customAlert({
-      title: "Images Locked",
-      placeholder: "Enter password to view...",
-      secureTextEntry: true,
-      confirmText: "Unlock",
-      cancelText: "Cancel",
-      onConfirm: (input: string) => {
-        if (simpleHash(input ?? "") === storedHash) {
-          unlockedImagesForGuild.add(guildId);
-          callback();
-          forceUpdateChat();
-        } else {
-          Alert.alert("Error", "Invalid Password");
-        }
-      }
-    });
-  } else {
-    Alert.alert("Unlock Required", "Please enter your password.");
-  }
+function getCodedLinkColors() {
+  let colors = getEmbedThemeColors?.(ThemeStore.theme)?.colors || {
+    acceptLabelGreenBackgroundColor: -14385083,
+    headerColor: -6973533,
+    borderColor: 268435455,
+    backgroundColor: -14276817,
+  };
+  return {
+    acceptLabelBackgroundColor: colors.acceptLabelGreenBackgroundColor,
+    headerColor: colors.headerColor,
+    borderColor: colors.borderColor,
+    backgroundColor: colors.backgroundColor,
+  };
 }
 
-function patchImageBlocking(): void {
-  // 1. Hook RowManager to strip out/spoil media details right before they render to the UI list
-  if (RowManager) {
-    const targetMethod = RowManager.generateRows ? "generateRows" : "updateRows";
-    if (typeof RowManager[targetMethod] === "function") {
-      const unpatchRows = before(targetMethod, RowManager, (args: any[]) => {
-        const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-        if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
+function makeRPL(attachment, shouldObscure: boolean) {
+  const filename = attachment.filename ?? "unknown";
+  const size = attachment.size ?? 0;
 
-        // If password control is mandatory and currently locked
-        if (pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-          const rows = args[0];
-          if (Array.isArray(rows)) {
-            for (const row of rows) {
-              if (row?.message) {
-                row.inlineEmbedMedia = false;
-                row.shouldObscureSpoiler = true;
-                
-                if (row.message.attachments) {
-                  for (const att of row.message.attachments) {
-                    att.spoiler = true;
-                  }
-                }
-                if (row.message.embeds) {
-                  for (const emb of row.message.embeds) {
-                    emb.type = "link";
-                    delete emb.image;
-                    delete emb.video;
-                    delete emb.thumbnail;
-                  }
-                }
-              }
-            }
+  const displayTitle = shouldObscure ? "⚠️ Hidden Media Asset" : "File" + " — " + size;
+  const displayFilename = shouldObscure ? "Content hidden until unlocked" : "\n" + filename;
+  const buttonText = shouldObscure ? "Unlock View" : "Preview";
+
+  return {
+    ...getCodedLinkColors(),
+    thumbnailCornerRadius: 15,
+    headerText: "",
+    titleText: displayTitle,
+    structurableSubtitleText: null,
+    type: null,
+    extendedType: CodedLinkExtendedType.EMBEDDED_ACTIVITY_INVITE,
+    participantAvatarUris: [],
+    acceptLabelText: buttonText,
+    splashUrl: null,
+    noParticipantsText: displayFilename,
+    ctaEnabled: true,
+  };
+}
+
+function handleInviteFileAction(args, originalFunction) {
+  const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+  
+  // Guard clause: intercept tap interaction if images are password locked
+  if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
+    const storedHash = pluginStorage.serverPasswords[guildId];
+    const customAlert = alertModule?.showInputAlert;
+
+    if (storedHash && customAlert) {
+      customAlert({
+        title: "Images Locked",
+        placeholder: "Enter password to view...",
+        secureTextEntry: true,
+        confirmText: "Unlock",
+        cancelText: "Cancel",
+        onConfirm: (input: string) => {
+          if (simpleHash(input ?? "") === storedHash) {
+            unlockedImagesForGuild.add(guildId);
+            originalFunction(...args); // Run original layout event handling securely on validation success
+          } else {
+            Alert.alert("Error", "Invalid Password");
           }
         }
       });
-      patches.push(unpatchRows);
+      return null;
     }
   }
 
-  // 2. Wrap image viewer entry items completely to catch attachment interactions
-  const MediaViewerModule = findByProps("openMediaViewer", "showMediaViewer") || findByProps("handleClickMedia");
-  if (MediaViewerModule) {
-    const methodsToPatch = ["openMediaViewer", "showMediaViewer", "handleClickMedia"];
-    for (const method of methodsToPatch) {
-      if (typeof (MediaViewerModule as any)[method] === "function") {
-        const unpatchMedia = instead(method, MediaViewerModule, function(args, orig) {
-          const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
-          if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-            triggerImageUnlockPopup(guildId, () => orig.apply(this, args));
-            return;
-          }
-          return orig.apply(this, args);
-        });
-        patches.push(unpatchMedia);
+  return originalFunction(...args);
+}
+
+function patchMessageHandlers(): void {
+  // Hook the interactive embed targets using your exact MessageHandlers utility architecture
+  const unpatchTap = MessageHandlers.patchInstead("handleTapInviteEmbed", handleInviteFileAction);
+  const unpatchAccept = MessageHandlers.patchInstead("handleTapInviteEmbedAccept", handleInviteFileAction);
+  patches.push(unpatchTap, unpatchAccept);
+}
+
+function patchRowManager(): void {
+  if (!RowManager?.prototype) return;
+  
+  const unpatchRow = after("generate", RowManager.prototype, (_, row) => {
+    const { message } = row;
+    if (!message?.attachments?.length) return;
+
+    const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
+    let shouldObscure = false;
+
+    if (guildId && pluginStorage.imageBlockList[guildId]) {
+      if (!pluginStorage.imageLockRequirePassword || !unlockedImagesForGuild.has(guildId)) {
+        shouldObscure = true;
       }
     }
-  }
+
+    let rpls: any[] = [];
+    
+    message.attachments.forEach((attachment) => {
+      rpls.push(makeRPL(attachment, shouldObscure));
+    });
+
+    if (rpls.length) {
+      if (!message.codedLinks?.length) message.codedLinks = [];
+      message.codedLinks.push(...rpls);
+      message.attachments = []; 
+    }
+  });
+  patches.push(unpatchRow);
 }
 
 function initializeChannelLockPatch(): void {
   if (!ChannelView) return;
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
 
-  const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
+  const unpatchLock = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
     const currentGuildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
 
     if (currentGuildId && pluginStorage.serverLockList[currentGuildId] && !unlockedGuilds.has(currentGuildId)) {
@@ -149,7 +171,7 @@ function initializeChannelLockPatch(): void {
 
     return orig(...args);
   });
-  patches.push(unpatch);
+  patches.push(unpatchLock);
 }
 
 let forceUpdateChat = () => {};
@@ -190,7 +212,7 @@ function LockScreen({ guildId, onUnlockCompleted }: any) {
         }
       });
     } else {
-      Alert.alert("Error", "Secure popup module missing.");
+      Alert.alert("Error", "Secure overlay module missing.");
     }
   }
 
@@ -212,7 +234,8 @@ export default {
   onLoad() {
     setTimeout(() => {
       try {
-        patchImageBlocking();
+        patchMessageHandlers();
+        patchRowManager();
         initializeChannelLockPatch();
       } catch (e) {
         console.error(e);
@@ -221,9 +244,12 @@ export default {
   },
 
   onUnload() {
-    patches.forEach((p) => p());
+    patches.forEach((unpatch) => {
+      if (typeof unpatch === "function") unpatch();
+    });
     patches.length = 0;
     unlockedGuilds.clear();
     unlockedImagesForGuild.clear();
+    MessageHandlers.unpatch(MessageHandlers.UnpatchALL); // Cleanly unload your patcher components
   },
 };
