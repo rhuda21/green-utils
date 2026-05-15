@@ -6,22 +6,18 @@ import Settings from "./Settings";
 
 const { Text, View, TouchableOpacity, StyleSheet, Alert } = ReactNative;
 
-// ─── Define Type Interfaces ───────────────────────────────────
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
   channelPasswords: Record<string, string>;
   channelLockList: Record<string, boolean>;
 }
 
-// Cast storage to our typed interface safely
 const pluginStorage = storage as unknown as PluginStorage;
 
-// ─── Storage defaults ─────────────────────────────────────────
 pluginStorage.imageBlockList   ??= {};
 pluginStorage.channelPasswords ??= {};
 pluginStorage.channelLockList  ??= {};
 
-// ─── Module lookups ──────────────────────────────────────────
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
@@ -29,9 +25,6 @@ const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelCha
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
 
-/**
- * Very lightweight "hash" – matches the Settings file logic
- */
 function simpleHash(str: string): string {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -40,41 +33,31 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-// ─── Feature 1: Data-Level Image Blocking ────────────────────
 function patchImageBlocking(): void {
   const createMessageContent = findByName("createMessageContent", false);
   const getChannel = findByProps("getChannel")?.getChannel;
 
-  if (!createMessageContent || !getChannel) {
-    console.warn("[ServerGuard] Required message preprocessing modules missing.");
-    return;
-  }
+  if (!createMessageContent || !getChannel) return;
 
   const unpatch = before("default", createMessageContent, (args: any[]) => {
     const content = args[0];
     if (!content?.message?.channel_id || !content?.options) return;
 
-    // 1. Resolve channel and guild ID context
     const channel = getChannel(content.message.channel_id);
     const guildId = channel?.guild_id;
 
-    // 2. Intercept data streams if the guild has blocking toggled ON
     if (guildId && pluginStorage.imageBlockList[guildId]) {
-      
-      // Force native client media collapse flags
       content.options.inlineEmbedMedia = false;
       content.options.shouldObscureSpoiler = true;
 
       const message = content.message;
       
-      // 3. Mark raw image files as spoilers natively
       if (message?.attachments?.length) {
         for (const attachment of message.attachments) {
           attachment.spoiler = true;
         }
       }
 
-      // 4. Neutralize third-party embedded links (Gifs, Tenor links, etc)
       if (message?.embeds?.length) {
         for (const embed of message.embeds) {
           embed.type = "image_blocked_by_guard"; 
@@ -84,15 +67,10 @@ function patchImageBlocking(): void {
   });
 
   patches.push(unpatch);
-  console.log("[ServerGuard] Data-level image block interceptor ready.");
 }
 
-// ─── Feature 2: Password-Protected Channels ───────────────────
 function initializeChannelLockPatch(): void {
-  if (!ChannelView || !ChannelStore) {
-    console.warn("[ServerGuard] Channel View components missing, skipping chat rule locks.");
-    return;
-  }
+  if (!ChannelView || !ChannelStore) return;
 
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
 
@@ -110,10 +88,8 @@ function initializeChannelLockPatch(): void {
   });
 
   patches.push(unpatch);
-  console.log(`[ServerGuard] Locked channel rules attached onto: ${targetMethod}`);
 }
 
-// ─── UI Components ────────────────────────────────────────────
 function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
@@ -164,21 +140,16 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
   );
 }
 
-// ─── Plugin Lifecycle ─────────────────────────────────────────
 export default {
   settings: Settings,
 
   onLoad() {
-    console.log("[ServerGuard] Plugin staging load runtime initialization...");
-    
-    // 1-second timeout loop handles late asynchronous rendering dependencies gracefully
     setTimeout(() => {
       try {
         patchImageBlocking();
         initializeChannelLockPatch();
-        console.log("[ServerGuard] Core modules hooked cleanly.");
       } catch (e) {
-        console.error("[ServerGuard] Lifecycle patch compilation failure:", e);
+        console.error(e);
       }
     }, 1000);
   },
@@ -187,6 +158,5 @@ export default {
     patches.forEach((p) => p());
     patches.length = 0;
     unlockedChannels.clear();
-    console.log("[ServerGuard] Unpatched modules safely.");
   },
 };

@@ -1,29 +1,13 @@
 import { storage } from "@vendetta/plugin";
 import { findByProps, findByStoreName } from "@vendetta/metro";
 import { React, ReactNative } from "@vendetta/metro/common";
+import { Forms } from "@vendetta/ui/components";
 
 const { ScrollView, Text, View, Switch, StyleSheet, TouchableOpacity, Alert } = ReactNative;
+const { FormInput } = Forms;
 
 const GuildStore   = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
-
-// Safe extraction of Vendetta's custom UI alert component for Android fallback
-const alertModule = findByProps("showInputAlert");
-
-// ─── Define Component Interfaces ─────────────────────────────
-interface GuildRowProps {
-  guild: {
-    id: string;
-    name: string;
-  };
-  isLast: boolean;
-}
-
-interface ChannelRowProps {
-  channelId: string;
-  isLast: boolean;
-  onRemove: () => void;
-}
 
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
@@ -33,7 +17,6 @@ interface PluginStorage {
 
 const pluginStorage = storage as unknown as PluginStorage;
 
-// ─── Simple hash (must match index.ts) ───────────────────────
 function simpleHash(str: string): string {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -42,184 +25,153 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-// ─── Styles ───────────────────────────────────────────────────
 const s = StyleSheet.create({
   page:         { flex: 1, backgroundColor: "#1e1f22", padding: 16 },
-  section:      { marginBottom: 24 },
-  sectionHead:  { color: "#80848e", fontSize: 11, fontWeight: "700", letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 8, marginLeft: 4 },
-  card:         { backgroundColor: "#2b2d31", borderRadius: 10, overflow: "hidden" },
-  row:          { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#3f4147" },
-  rowLast:      { borderBottomWidth: 0 },
-  avatar:       { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", marginRight: 12 },
-  avatarText:   { color: "#fff", fontWeight: "700", fontSize: 14 },
-  nameCol:      { flex: 1 },
-  name:         { color: "#f2f3f5", fontSize: 15 },
-  subtext:      { color: "#80848e", fontSize: 12, marginTop: 1 },
-  badge:        { fontSize: 11, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, overflow: "hidden", marginRight: 8 },
-  badgeLocked:  { backgroundColor: "#3d1a1a", color: "#ed4245" },
-  addBtn:       { backgroundColor: "#5865f2", borderRadius: 8, paddingVertical: 10, alignItems: "center", marginTop: 10 },
-  addBtnText:   { color: "#fff", fontWeight: "600", fontSize: 14 },
-  removeBtn:    { paddingHorizontal: 10, paddingVertical: 4, backgroundColor: "#3d1a1a", borderRadius: 6 },
-  removeBtnTxt: { color: "#ed4245", fontSize: 12 },
+  header:       { color: "#f2f3f5", fontSize: 22, fontWeight: "700", marginBottom: 4 },
+  subheader:    { color: "#949ba4", fontSize: 13, marginBottom: 20 },
+  sectionHead:  { color: "#949ba4", fontSize: 11, fontWeight: "700", letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 8, marginTop: 12 },
+  card:         { backgroundColor: "#2b2d31", borderRadius: 12, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: "#35373c" },
+  grid:         { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
+  chip:         { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#313338", borderRadius: 8, borderWidth: 1, borderColor: "#3f4147" },
+  chipSelected: { backgroundColor: "#5865f2", borderColor: "#5865f2" },
+  chipText:     { color: "#b5bac1", fontSize: 13, fontWeight: "600" },
+  chipTextSel:  { color: "#ffffff" },
+  row:          { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10 },
+  divider:      { height: 1, backgroundColor: "#3f4147", marginVertical: 12 },
+  btnSave:      { backgroundColor: "#248046", borderRadius: 8, paddingVertical: 12, alignItems: "center", marginTop: 8 },
+  btnSaveText:  { color: "#fff", fontWeight: "600", fontSize: 14 },
+  dangerText:   { color: "#f23f43", fontSize: 12, fontWeight: "600" }
 });
 
-// ─── Sub-components ───────────────────────────────────────────
-
-function GuildRow({ guild, isLast }: GuildRowProps) {
-  const [blocked, setBlocked] = React.useState<boolean>(
-    !!pluginStorage.imageBlockList[guild.id]
-  );
-
-  function toggle(val: boolean) {
-    setBlocked(val);
-    pluginStorage.imageBlockList[guild.id] = val;
-  }
-
-  const colors = ["#5865f2", "#3ba55c", "#ed4245", "#faa61a", "#eb459e"];
-  const color  = colors[parseInt(guild.id.slice(-1), 16) % colors.length];
-
-  return React.createElement(
-    View, { style: [s.row, isLast && s.rowLast] },
-    React.createElement(
-      View, { style: [s.avatar, { backgroundColor: color }] },
-      React.createElement(Text, { style: s.avatarText }, guild?.name ? guild.name[0].toUpperCase() : "?")
-    ),
-    React.createElement(
-      View, { style: s.nameCol },
-      React.createElement(Text, { style: s.name }, guild.name),
-      React.createElement(
-        Text, { style: s.subtext },
-        blocked ? "Images hidden" : "Images visible"
-      )
-    ),
-    React.createElement(Switch, {
-      value: blocked,
-      onValueChange: toggle,
-      trackColor: { false: "#4f545c", true: "#5865f2" },
-    })
-  );
-}
-
-function ChannelRow({ channelId, isLast, onRemove }: ChannelRowProps) {
-  const channel = ChannelStore?.getChannel?.(channelId);
-  const name    = channel ? `#${channel.name}` : `#${channelId.slice(0, 8)}`;
-
-  return React.createElement(
-    View, { style: [s.row, isLast && s.rowLast] },
-    React.createElement(Text, { style: [s.name, { flex: 1 }] }, name),
-    React.createElement(
-      Text, { style: [s.badge, s.badgeLocked] }, "🔒 locked"
-    ),
-    React.createElement(
-      TouchableOpacity, { style: s.removeBtn, onPress: onRemove },
-      React.createElement(Text, { style: s.removeBtnTxt }, "remove")
-    )
-  );
-}
-
-// ─── Main settings component ──────────────────────────────────
 export default function Settings() {
-  const guilds = React.useMemo<any[]>(
-    () => (GuildStore?.getGuilds ? Object.values(GuildStore.getGuilds()) : []),
-    []
-  );
+  const guilds = React.useMemo(() => (GuildStore?.getGuilds ? Object.values(GuildStore.getGuilds()) : []) as any[], []);
+  const [selectedGuildId, setSelectedGuildId] = React.useState<string>(guilds[0]?.id || "");
+  const [passwordInput, setPasswordInput] = React.useState("");
+  const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
 
-  const [lockedChannels, setLockedChannels] = React.useState<string[]>(
-    () => Object.keys(pluginStorage.channelLockList || {}).filter(
-      (id) => pluginStorage.channelLockList[id]
-    )
-  );
+  const activeChannels = React.useMemo(() => {
+    if (!selectedGuildId || !ChannelStore?.getMutableGuildChannelsAll) return [];
+    const allChannels = Object.values(ChannelStore.getMutableGuildChannelsAll());
+    return allChannels.filter((c: any) => c.guild_id === selectedGuildId && (c.type === 0 || c.type === 2));
+  }, [selectedGuildId]);
 
-  // Cross-platform input wrapper processing
-  async function handleInputPrompt(title: string, placeholder: string, secure: boolean = false): Promise<string | null> {
-    // If running on iOS, utilize native platform alerting
-    if (typeof Alert.prompt === "function") {
-      return new Promise((resolve) => {
-        Alert.prompt(
-          title,
-          placeholder,
-          [{ text: "Cancel", style: "cancel", onPress: () => resolve(null) }, { text: "OK", onPress: (text) => resolve(text || "") }],
-          secure ? "secure-text" : "plain-text"
-        );
-      });
-    } 
-    
-    // Universal Android framework UI fallback
-    if (alertModule?.showInputAlert) {
-      return alertModule.showInputAlert({
-        title: title,
-        placeholder: placeholder,
-        secureTextEntry: secure
-      });
+  const isImageBlocked = !!pluginStorage.imageBlockList[selectedGuildId];
+  
+  function toggleImageBlocking(val: boolean) {
+    pluginStorage.imageBlockList[selectedGuildId] = val;
+    forceUpdate();
+  }
+
+  function handleChannelToggle(channelId: string, isCurrentlyLocked: boolean) {
+    if (isCurrentlyLocked) {
+      delete pluginStorage.channelLockList[channelId];
+      delete pluginStorage.channelPasswords[channelId];
+      forceUpdate();
+    } else {
+      if (!passwordInput.trim()) {
+        Alert.alert("Password Required", "Please enter an access key in the field below before checking this option.");
+        return;
+      }
+      pluginStorage.channelLockList[channelId] = true;
+      pluginStorage.channelPasswords[channelId] = simpleHash(passwordInput);
+      setPasswordInput("");
+      forceUpdate();
+      Alert.alert("Success", "Channel lock rule applied safely.");
     }
-
-    // Baseline fallback reminder
-    Alert.alert("Error", "Your current application layout build lacks input alert dialog routing layers.");
-    return null;
   }
 
-  async function lockChannel() {
-    const channelName = await handleInputPrompt("Lock Channel", "Enter Channel ID or exact name:");
-    if (!channelName) return;
+  return (
+    <ScrollView style={s.page} contentContainerStyle={{ paddingBottom: 60 }}>
+      <Text style={s.header}>ServerGuard Dashboard</Text>
+      <Text style={s.subheader}>Select a server below to customize active moderation security blocks.</Text>
 
-    const all: any[] = Object.values(ChannelStore?.getMutableGuildChannelsAll?.() ?? {});
-    const found = all.find((c) => c.name === channelName.replace(/^#/, ""));
-    const id = found?.id ?? channelName;
+      <Text style={s.sectionHead}>1. Select Target Guild</Text>
+      <View style={s.grid}>
+        {guilds.map((g) => {
+          const isSelected = selectedGuildId === g.id;
+          return (
+            <TouchableOpacity 
+              key={g.id} 
+              style={[s.chip, isSelected && s.chipSelected]} 
+              onPress={() => setSelectedGuildId(g.id)}
+            >
+              <Text style={[s.chipText, isSelected && s.chipTextSel]}>
+                {g.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
-    const password = await handleInputPrompt("Set Password", "Enter a security access password for this room:", true);
-    if (!password) return;
+      {selectedGuildId ? (
+        <>
+          <Text style={s.sectionHead}>2. Server Media Rules</Text>
+          <View style={s.card}>
+            <View style={s.row}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={{ color: "#f2f3f5", fontSize: 15, fontWeight: "600" }}>Block Server Images</Text>
+                <Text style={{ color: "#949ba4", fontSize: 12, marginTop: 2 }}>
+                  Forces media attachments and link embeds into tap-to-reveal blurs across this entire server.
+                </Text>
+              </View>
+              <Switch 
+                value={isImageBlocked} 
+                onValueChange={toggleImageBlocking}
+                trackColor={{ false: "#4e5058", true: "#5865f2" }}
+              />
+            </View>
+          </View>
 
-    pluginStorage.channelPasswords[id] = simpleHash(password);
-    pluginStorage.channelLockList[id]  = true;
-    setLockedChannels((prev) => [...prev, id]);
-    Alert.alert("Success", "Channel lock rules saved.");
-  }
+          <Text style={s.sectionHead}>3. Channel Access Control</Text>
+          <View style={s.card}>
+            <View style={{ marginBottom: 14 }}>
+              <FormInput
+                title="SHARED PROTECTION PASSWORD"
+                placeholder="Type a password here first, then tap a channel below to lock it..."
+                secureTextEntry={true}
+                value={passwordInput}
+                onChange={(v: string) => setPasswordInput(v)}
+              />
+            </View>
 
-  function removeChannel(id: string) {
-    delete pluginStorage.channelPasswords[id];
-    delete pluginStorage.channelLockList[id];
-    setLockedChannels((prev) => prev.filter((c) => c !== id));
-  }
+            <View style={s.divider} />
 
-  return React.createElement(
-    ScrollView, { style: s.page, contentContainerStyle: { paddingBottom: 40 } },
-
-    // ── Section 1: Image blocking ──
-    React.createElement(
-      View, { style: s.section },
-      React.createElement(Text, { style: s.sectionHead }, "Block images per server"),
-      React.createElement(
-        View, { style: s.card },
-        guilds.map((g, i) =>
-          React.createElement(GuildRow, {
-            key: g.id,
-            guild: g,
-            isLast: i === guilds.length - 1,
-          })
-        )
-      )
-    ),
-
-    // ── Section 2: Channel passwords ──
-    React.createElement(
-      View, { style: s.section },
-      React.createElement(Text, { style: s.sectionHead }, "Password-locked channels"),
-      lockedChannels.length > 0 &&
-        React.createElement(
-          View, { style: [s.card, { marginBottom: 10 }] },
-          lockedChannels.map((id, i) =>
-            React.createElement(ChannelRow, {
-              key: id,
-              channelId: id,
-              isLast: i === lockedChannels.length - 1,
-              onRemove: () => removeChannel(id),
-            })
-          )
-        ),
-      React.createElement(
-        TouchableOpacity, { style: s.addBtn, onPress: lockChannel },
-        React.createElement(Text, { style: s.addBtnText }, "+ Lock a channel")
-      )
-    )
+            {activeChannels.length === 0 ? (
+              <Text style={{ color: "#949ba4", fontSize: 13, textAlign: "center", paddingVertical: 10 }}>
+                No standard text/voice channels mapped in this environment context.
+              </Text>
+            ) : (
+              activeChannels.map((ch: any, idx) => {
+                const isLocked = !!pluginStorage.channelLockList[ch.id];
+                return (
+                  <View key={ch.id}>
+                    <View style={s.row}>
+                      <View>
+                        <Text style={{ color: isLocked ? "#f23f43" : "#f2f3f5", fontSize: 14, fontWeight: "500" }}>
+                          {isLocked ? `🔒 #${ch.name}` : `#${ch.name}`}
+                        </Text>
+                        <Text style={{ color: "#949ba4", fontSize: 11, marginTop: 1 }}>
+                          {isLocked ? "Credentials validation required" : "Unrestricted public access flow"}
+                        </Text>
+                      </View>
+                      <Switch
+                        value={isLocked}
+                        onValueChange={() => handleChannelToggle(ch.id, isLocked)}
+                        trackColor={{ false: "#4e5058", true: "#f23f43" }}
+                      />
+                    </View>
+                    {idx !== activeChannels.length - 1 && <View style={{ height: 1, backgroundColor: "#35373c", marginVertical: 4 }} />}
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </>
+      ) : (
+        <Text style={{ color: "#949ba4", fontSize: 14, textAlign: "center", marginTop: 20 }}>
+          Please connect to or select a server to initialize config matrices.
+        </Text>
+      )}
+    </ScrollView>
   );
 }
