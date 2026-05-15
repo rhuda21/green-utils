@@ -22,7 +22,7 @@ const GuildStore = findByStoreName("GuildStore");
 const ChannelStoreModule = findByProps("getLastSelectedChannelId") || findByProps("getChannel", "getGuildChannels");
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const ContextMenuModule = findByProps("openContextMenu", "openContextMenuLazy");
-const ActionSheetModule = findByProps("openActionSheet", "hideActionSheet");
+const ActionSheetModule = findByProps("openActionSheet", "hideActionSheet", "showSimpleActionSheet");
 const alertModule = findByProps("showInputAlert");
 
 const patches: (() => void)[] = [];
@@ -210,24 +210,22 @@ function createActionObject(channelName: string, channelId: string, isLocked: bo
 
 function patchChannelHoldMenu(): void {
   if (ContextMenuModule) {
-    const methods = ["openContextMenu", "openContextMenuLazy"].filter(m => m in ContextMenuModule);
+    const methods = Object.keys(ContextMenuModule).filter(k => typeof (ContextMenuModule as any)[k] === "function");
     for (const method of methods) {
       const unpatch = instead(method as any, ContextMenuModule, function (args, orig) {
-        const [,, renderOptions] = args;
-        if (renderOptions && typeof renderOptions === "object") {
-          const channelId = renderOptions.channelId || renderOptions.channel?.id || renderOptions.id;
-          if (channelId) {
-            const channel = ChannelStoreModule?.getChannel?.(channelId);
-            const channelName = channel?.name || "Channel";
-            const isLocked = !!pluginStorage.channelLockList?.[channelId];
-            const customAction = createActionObject(channelName, channelId, isLocked);
-            
-            if (Array.isArray(renderOptions.actions)) {
-              renderOptions.actions.push(customAction);
-            } else if (Array.isArray(renderOptions.sections?.[0]?.items)) {
-              renderOptions.sections[0].items.push(customAction);
-            } else {
-              renderOptions.sections = [{ items: [customAction] }];
+        for (const arg of args) {
+          if (arg && typeof arg === "object") {
+            const channelId = arg.channelId || arg.channel?.id || arg.id;
+            if (channelId && typeof channelId === "string" && channelId.length > 10) {
+              const channel = ChannelStoreModule?.getChannel?.(channelId);
+              const channelName = channel?.name || "Channel";
+              const isLocked = !!pluginStorage.channelLockList?.[channelId];
+              const customAction = createActionObject(channelName, channelId, isLocked);
+
+              if (Array.isArray(arg.options)) arg.options.push(customAction);
+              if (Array.isArray(arg.items)) arg.items.push(customAction);
+              if (Array.isArray(arg.actions)) arg.actions.push(customAction);
+              if (arg.sections?.[0]?.items) arg.sections[0].items.push(customAction);
             }
           }
         }
@@ -237,29 +235,30 @@ function patchChannelHoldMenu(): void {
     }
   }
 
-  if (ActionSheetModule && "openActionSheet" in ActionSheetModule) {
-    const unpatch = instead("openActionSheet", ActionSheetModule, function (args, orig) {
-      const [,, config] = args;
-      if (config && typeof config === "object") {
-        const channelId = config.channelId || config.channel?.id || config.id;
-        if (channelId) {
-          const channel = ChannelStoreModule?.getChannel?.(channelId);
-          const channelName = channel?.name || "Channel";
-          const isLocked = !!pluginStorage.channelLockList?.[channelId];
-          const customAction = createActionObject(channelName, channelId, isLocked);
+  if (ActionSheetModule) {
+    const sheetMethods = Object.keys(ActionSheetModule).filter(k => typeof (ActionSheetModule as any)[k] === "function");
+    for (const method of sheetMethods) {
+      const unpatch = instead(method as any, ActionSheetModule, function (args, orig) {
+        for (const arg of args) {
+          if (arg && typeof arg === "object") {
+            const channelId = arg.channelId || arg.channel?.id || arg.id;
+            if (channelId && typeof channelId === "string" && channelId.length > 10) {
+              const channel = ChannelStoreModule?.getChannel?.(channelId);
+              const channelName = channel?.name || "Channel";
+              const isLocked = !!pluginStorage.channelLockList?.[channelId];
+              const customAction = createActionObject(channelName, channelId, isLocked);
 
-          if (Array.isArray(config.options)) {
-            config.options.push(customAction);
-          } else if (Array.isArray(config.items)) {
-            config.items.push(customAction);
-          } else if (Array.isArray(config.actions)) {
-            config.actions.push(customAction);
+              if (Array.isArray(arg.options)) arg.options.push(customAction);
+              if (Array.isArray(arg.items)) arg.items.push(customAction);
+              if (Array.isArray(arg.actions)) arg.actions.push(customAction);
+              if (arg.sections?.[0]?.items) arg.sections[0].items.push(customAction);
+            }
           }
         }
-      }
-      return orig.apply(this, args);
-    });
-    patches.push(unpatch);
+        return orig.apply(this, args);
+      });
+      patches.push(unpatch);
+    }
   }
 }
 
