@@ -1,11 +1,14 @@
 import { storage } from "@vendetta/plugin";
-import { findByStoreName } from "@vendetta/metro";
+import { findByProps, findByStoreName } from "@vendetta/metro";
 import { React, ReactNative } from "@vendetta/metro/common";
 
 const { ScrollView, Text, View, Switch, StyleSheet, TouchableOpacity, Alert } = ReactNative;
 
 const GuildStore   = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
+
+// Safe extraction of Vendetta's custom UI alert component for Android fallback
+const alertModule = findByProps("showInputAlert");
 
 // ─── Define Component Interfaces ─────────────────────────────
 interface GuildRowProps {
@@ -127,43 +130,49 @@ export default function Settings() {
     )
   );
 
-  function lockChannel() {
-    Alert.prompt(
-      "Lock Channel",
-      "Enter the Channel ID or exact name:",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Next",
-          onPress: (channelName?: string) => {
-            if (!channelName) return;
+  // Cross-platform input wrapper processing
+  async function handleInputPrompt(title: string, placeholder: string, secure: boolean = false): Promise<string | null> {
+    // If running on iOS, utilize native platform alerting
+    if (typeof Alert.prompt === "function") {
+      return new Promise((resolve) => {
+        Alert.prompt(
+          title,
+          placeholder,
+          [{ text: "Cancel", style: "cancel", onPress: () => resolve(null) }, { text: "OK", onPress: (text) => resolve(text || "") }],
+          secure ? "secure-text" : "plain-text"
+        );
+      });
+    } 
+    
+    // Universal Android framework UI fallback
+    if (alertModule?.showInputAlert) {
+      return alertModule.showInputAlert({
+        title: title,
+        placeholder: placeholder,
+        secureTextEntry: secure
+      });
+    }
 
-            const all: any[] = Object.values(ChannelStore?.getMutableGuildChannelsAll?.() ?? {});
-            const found = all.find((c) => c.name === channelName.replace(/^#/, ""));
-            const id = found?.id ?? channelName;
+    // Baseline fallback reminder
+    Alert.alert("Error", "Your current application layout build lacks input alert dialog routing layers.");
+    return null;
+  }
 
-            Alert.prompt(
-              "Set Password",
-              "Enter a password for this channel:",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Lock",
-                  onPress: (password?: string) => {
-                    if (!password) return;
-                    pluginStorage.channelPasswords[id] = simpleHash(password);
-                    pluginStorage.channelLockList[id]  = true;
-                    setLockedChannels((prev) => [...prev, id]);
-                  }
-                }
-              ],
-              "secure-text"
-            );
-          }
-        }
-      ],
-      "plain-text"
-    );
+  async function lockChannel() {
+    const channelName = await handleInputPrompt("Lock Channel", "Enter Channel ID or exact name:");
+    if (!channelName) return;
+
+    const all: any[] = Object.values(ChannelStore?.getMutableGuildChannelsAll?.() ?? {});
+    const found = all.find((c) => c.name === channelName.replace(/^#/, ""));
+    const id = found?.id ?? channelName;
+
+    const password = await handleInputPrompt("Set Password", "Enter a security access password for this room:", true);
+    if (!password) return;
+
+    pluginStorage.channelPasswords[id] = simpleHash(password);
+    pluginStorage.channelLockList[id]  = true;
+    setLockedChannels((prev) => [...prev, id]);
+    Alert.alert("Success", "Channel lock rules saved.");
   }
 
   function removeChannel(id: string) {

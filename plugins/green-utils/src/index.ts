@@ -1,25 +1,37 @@
-import { instead } from "@vendetta/patcher";
-import { findByProps, findByStoreName } from "@vendetta/metro";
+import { instead, before } from "@vendetta/patcher";
+import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
 const { Text, View, TouchableOpacity, StyleSheet, Alert } = ReactNative;
 
+// ─── Define Type Interfaces ───────────────────────────────────
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
   channelPasswords: Record<string, string>;
   channelLockList: Record<string, boolean>;
 }
 
+// Cast storage to our typed interface safely
 const pluginStorage = storage as unknown as PluginStorage;
+
+// ─── Storage defaults ─────────────────────────────────────────
 pluginStorage.imageBlockList   ??= {};
 pluginStorage.channelPasswords ??= {};
 pluginStorage.channelLockList  ??= {};
 
+// ─── Module lookups ──────────────────────────────────────────
+const GuildStore = findByStoreName("GuildStore");
+const ChannelStore = findByStoreName("ChannelStore");
+const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
+
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
 
+/**
+ * Very lightweight "hash" – matches the Settings file logic
+ */
 function simpleHash(str: string): string {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -28,76 +40,80 @@ function simpleHash(str: string): string {
   return h.toString(16);
 }
 
-// ─── Safe Dynamic Patching ───────────────────────────────────
-function initializePatches() {
-  console.log("[ServerGuard] Starting dynamic module search...");
+// ─── Feature 1: Data-Level Image Blocking ────────────────────
+function patchImageBlocking(): void {
+  const createMessageContent = findByName("createMessageContent", false);
+  const getChannel = findByProps("getChannel")?.getChannel;
 
-  const GuildStore = findByStoreName("GuildStore");
-  const ChannelStore = findByStoreName("ChannelStore");
+  if (!createMessageContent || !getChannel) {
+    console.warn("[ServerGuard] Required message preprocessing modules missing.");
+    return;
+  }
 
-  // 1. Core Image Patching
-  try {
-    const MediaComponent = 
-      findByProps("renderAttachment", "renderMedia") || 
-      findByProps("renderMediaAttachments") ||
-      findByProps("MessageMediaAttachments");
+  const unpatch = before("default", createMessageContent, (args: any[]) => {
+    const content = args[0];
+    if (!content?.message?.channel_id || !content?.options) return;
 
-    if (MediaComponent && GuildStore) {
-      const targetMethod = "renderAttachment" in MediaComponent ? "renderAttachment" : "renderMedia";
+    // 1. Resolve channel and guild ID context
+    const channel = getChannel(content.message.channel_id);
+    const guildId = channel?.guild_id;
+
+    // 2. Intercept data streams if the guild has blocking toggled ON
+    if (guildId && pluginStorage.imageBlockList[guildId]) {
       
-      const unpush = instead(targetMethod, MediaComponent, (args: any[], orig: Function) => {
-        const guildId = GuildStore.getLastSelectedGuildId?.();
-        if (guildId && pluginStorage.imageBlockList[guildId]) {
-          const attachment = args[0]?.attachment || args[0]?.item || args[0];
-          const url = attachment?.url || attachment?.proxyUrl || "";
+      // Force native client media collapse flags
+      content.options.inlineEmbedMedia = false;
+      content.options.shouldObscureSpoiler = true;
 
-          if (attachment?.content_type?.startsWith("image") || url.match(/\.(jpg|jpeg|png|webp|gif)/i)) {
-            return React.createElement(
-              View,
-              { style: { padding: 12, backgroundColor: "#2b2d31", borderRadius: 8, marginVertical: 4, alignItems: "center" } },
-              React.createElement(Text, { style: { color: "#ed4245", fontSize: 13, fontWeight: "600" } }, "🚫 Image hidden by ServerGuard")
-            );
-          }
+      const message = content.message;
+      
+      // 3. Mark raw image files as spoilers natively
+      if (message?.attachments?.length) {
+        for (const attachment of message.attachments) {
+          attachment.spoiler = true;
         }
-        return orig(...args);
-      });
-      patches.push(unpush);
-      console.log(`[ServerGuard] Image blocking successfully hooked onto: ${targetMethod}`);
-    } else {
-      console.warn("[ServerGuard] Could not find Discord MediaComponent modules.");
-    }
-  } catch (e) {
-    console.error("[ServerGuard] Image patch initialization crashed:", e);
-  }
+      }
 
-  // 2. Core Channel Lock Patching
-  try {
-    const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
-    
-    if (ChannelView && ChannelStore) {
-      const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
-
-      const unpush = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
-        const channelId = ChannelStore.getLastSelectedChannelId?.();
-        if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
-          return React.createElement(LockScreen, {
-            channelId,
-            onUnlockCompleted: () => unlockedChannels.add(channelId)
-          });
+      // 4. Neutralize third-party embedded links (Gifs, Tenor links, etc)
+      if (message?.embeds?.length) {
+        for (const embed of message.embeds) {
+          embed.type = "image_blocked_by_guard"; 
         }
-        return orig(...args);
-      });
-      patches.push(unpush);
-      console.log(`[ServerGuard] Channel lock successfully hooked onto: ${targetMethod}`);
-    } else {
-      console.warn("[ServerGuard] Could not find Discord ChannelView modules.");
+      }
     }
-  } catch (e) {
-    console.error("[ServerGuard] Channel lock patch initialization crashed:", e);
-  }
+  });
+
+  patches.push(unpatch);
+  console.log("[ServerGuard] Data-level image block interceptor ready.");
 }
 
-// ─── UI Lock Component ────────────────────────────────────────
+// ─── Feature 2: Password-Protected Channels ───────────────────
+function initializeChannelLockPatch(): void {
+  if (!ChannelView || !ChannelStore) {
+    console.warn("[ServerGuard] Channel View components missing, skipping chat rule locks.");
+    return;
+  }
+
+  const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
+
+  const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
+    const channelId = ChannelStore.getLastSelectedChannelId?.();
+
+    if (channelId && pluginStorage.channelLockList[channelId] && !unlockedChannels.has(channelId)) {
+      return React.createElement(LockScreen, {
+        channelId,
+        onUnlockCompleted: () => unlockedChannels.add(channelId)
+      });
+    }
+
+    return orig(...args);
+  });
+
+  patches.push(unpatch);
+  console.log(`[ServerGuard] Locked channel rules attached onto: ${targetMethod}`);
+}
+
+// ─── UI Components ────────────────────────────────────────────
 function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
@@ -110,14 +126,12 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
 
   function handleUnlock() {
     const storedHash = pluginStorage.channelPasswords[channelId];
-    
-    // Fallback checking for custom input alert layouts (Android-safe)
     const alertPrompt = (Alert as any).prompt || findByProps("showInputAlert")?.showInputAlert;
     
     if (alertPrompt) {
       alertPrompt(
         "Channel Locked",
-        "Enter password:",
+        "Enter password to unlock chat access:",
         [
           { text: "Cancel" },
           {
@@ -126,7 +140,7 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
               if (simpleHash(input ?? "") === storedHash) {
                 onUnlockCompleted();
               } else {
-                Alert.alert("Error", "Invalid Password");
+                Alert.alert("Error", "Invalid Password Configuration");
               }
             }
           }
@@ -134,8 +148,7 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
         "secure-text"
       );
     } else {
-      // Basic text box prompt string toggle if native handler fails
-      Alert.alert("Device Limitation", "Please manage lock credentials via the plugin settings page.");
+      Alert.alert("Device Error", "Unable to map prompt interfaces. Lift block thresholds in Settings.");
     }
   }
 
@@ -143,7 +156,7 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
     View, { style: styles.container },
     React.createElement(Text, { style: styles.icon }, "🔒"),
     React.createElement(Text, { style: styles.title }, "Channel Locked"),
-    React.createElement(Text, { style: styles.subtitle }, "This chat room is restricted by ServerGuard."),
+    React.createElement(Text, { style: styles.subtitle }, "This room is restricted behind a ServerGuard credentials validation wall."),
     React.createElement(
       TouchableOpacity, { style: styles.btn, onPress: handleUnlock },
       React.createElement(Text, { style: styles.btnText }, "Tap to Unlock")
@@ -156,11 +169,17 @@ export default {
   settings: Settings,
 
   onLoad() {
-    console.log("[ServerGuard] Plugin loading initial state...");
+    console.log("[ServerGuard] Plugin staging load runtime initialization...");
     
-    // Run lookup after a 1-second delay to allow Discord Metro registry to populate completely
+    // 1-second timeout loop handles late asynchronous rendering dependencies gracefully
     setTimeout(() => {
-      initializePatches();
+      try {
+        patchImageBlocking();
+        initializeChannelLockPatch();
+        console.log("[ServerGuard] Core modules hooked cleanly.");
+      } catch (e) {
+        console.error("[ServerGuard] Lifecycle patch compilation failure:", e);
+      }
     }, 1000);
   },
 
@@ -168,5 +187,6 @@ export default {
     patches.forEach((p) => p());
     patches.length = 0;
     unlockedChannels.clear();
+    console.log("[ServerGuard] Unpatched modules safely.");
   },
 };
