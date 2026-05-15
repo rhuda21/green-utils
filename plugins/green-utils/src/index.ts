@@ -13,15 +13,6 @@ interface PluginStorage {
   channelLockList: Record<string, boolean>;
 }
 
-interface Attachment {
-  content_type?: string;
-  [key: string]: any;
-}
-
-interface RenderAttachmentArgs {
-  attachment: Attachment;
-}
-
 // Cast storage to our typed interface safely
 const pluginStorage = storage as unknown as PluginStorage;
 
@@ -33,14 +24,20 @@ pluginStorage.channelLockList  ??= {};
 // ─── Module lookups ──────────────────────────────────────────
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
-const MediaComponent = findByProps("renderAttachment", "renderMedia");
+
+// Multi-fallback lookup for media rendering components
+const MediaComponent = 
+  findByProps("renderAttachment", "renderMedia") || 
+  findByProps("renderMediaAttachments") ||
+  findByProps("MessageMediaAttachments");
+
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
 
 /**
- * Very lightweight "hash" – just so we aren't storing plaintext.
+ * Very lightweight "hash" – must match Settings file
  */
 function simpleHash(str: string): string {
   let h = 0;
@@ -57,20 +54,29 @@ function patchImageBlocking(): void {
     return;
   }
 
-  const unpatch = instead("renderAttachment", MediaComponent, (args: [RenderAttachmentArgs], orig: Function) => {
-    const { attachment } = args[0] ?? {};
+  // Determine method name dynamically based on fallback matches
+  const targetMethod = 
+    "renderAttachment" in MediaComponent ? "renderAttachment" :
+    "renderMedia" in MediaComponent ? "renderMedia" : "default";
+
+  const unpatch = instead(targetMethod, MediaComponent, (args: any[], orig: Function) => {
     const guildId = GuildStore?.getLastSelectedGuildId?.();
 
-    if (
-      guildId &&
-      pluginStorage.imageBlockList[guildId] &&
-      attachment?.content_type?.startsWith("image")
-    ) {
-      return React.createElement(
-        View,
-        { style: { padding: 8, backgroundColor: "#2b2d31", borderRadius: 4 } },
-        React.createElement(Text, { style: { color: "#80848e", fontSize: 12 } }, "🚫 Image hidden by ServerGuard")
-      );
+    if (guildId && pluginStorage.imageBlockList[guildId]) {
+      // Pull image target out of variant argument definitions safely
+      const attachment = args[0]?.attachment || args[0]?.item || args[0];
+      const url = attachment?.url || attachment?.proxyUrl || "";
+
+      if (
+        attachment?.content_type?.startsWith("image") || 
+        url.match(/\.(jpg|jpeg|png|webp|gif)/i)
+      ) {
+        return React.createElement(
+          View,
+          { style: { padding: 12, backgroundColor: "#2b2d31", borderRadius: 8, marginVertical: 4, alignItems: "center" } },
+          React.createElement(Text, { style: { color: "#80848e", fontSize: 13, fontWeight: "600" } }, "🚫 Image hidden by ServerGuard")
+        );
+      }
     }
 
     return orig(...args);
@@ -84,25 +90,58 @@ async function promptForPassword(channelId: string): Promise<boolean> {
   const storedHash = pluginStorage.channelPasswords[channelId];
 
   return new Promise((resolve) => {
-    Alert.prompt(
-      "Channel locked",
-      "Enter the password to view this channel.",
-      [
-        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-        {
-          text: "Unlock",
-          onPress: (input?: string) => {
+    // Check if device supports prompt (iOS only natively)
+    if (typeof Alert.prompt === "function") {
+      Alert.prompt(
+        "Channel locked",
+        "Enter the password to view this channel.",
+        [
+          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+          {
+            text: "Unlock",
+            onPress: (input?: string) => {
+              if (simpleHash(input ?? "") === storedHash) {
+                unlockedChannels.add(channelId);
+                resolve(true);
+              } else {
+                Alert.alert("Error", "Incorrect password");
+                resolve(false);
+              }
+            },
+          },
+        ],
+        "secure-text"
+      );
+    } else {
+      // Android Fallback: Use the native input modal helper provided by client UI layer if present,
+      // or redirect users to use their profile dashboard to temporarily lift rules.
+      // For core stability, fallback loops use standard dialog confirmation:
+      try {
+        const { showInputAlert } = require("@vendetta/ui/alerts") || {};
+        if (showInputAlert) {
+          showInputAlert({
+            title: "Channel locked",
+            placeholder: "Enter password",
+            secureTextEntry: true,
+          }).then((input: string) => {
             if (simpleHash(input ?? "") === storedHash) {
               unlockedChannels.add(channelId);
               resolve(true);
             } else {
               resolve(false);
             }
-          },
-        },
-      ],
-      "secure-text"
-    );
+          });
+          return;
+        }
+      } catch {}
+
+      // Absolute baseline fallback alert if UI helpers are missing
+      Alert.alert(
+        "Android Protection", 
+        "To unlock channels on Android devices, please use the ServerGuard section in your Profile Settings to manage locks.",
+        [{ text: "OK", onPress: () => resolve(false) }]
+      );
+    }
   });
 }
 
@@ -113,6 +152,11 @@ async function promptForPassword(channelId: string): Promise<boolean> {
 function ChannelLockController({ channelId, origArgs, originalComponent }: any) {
   const [isUnlocked, setIsUnlocked] = React.useState<boolean>(unlockedChannels.has(channelId));
   const isLockEnabled = pluginStorage.channelLockList[channelId];
+
+  // Force strict synchronization state check
+  React.useEffect(() => {
+    setIsUnlocked(unlockedChannels.has(channelId));
+  }, [channelId]);
 
   if (isLockEnabled && !isUnlocked) {
     return React.createElement(LockScreen, {
@@ -126,12 +170,12 @@ function ChannelLockController({ channelId, origArgs, originalComponent }: any) 
 
 function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
-    container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338" },
-    icon:      { fontSize: 48, marginBottom: 12 },
-    title:     { color: "#f2f3f5", fontSize: 18, fontWeight: "600", marginBottom: 8 },
-    subtitle:  { color: "#80848e", fontSize: 14, marginBottom: 24 },
-    btn:       { backgroundColor: "#5865f2", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
-    btnText:   { color: "#fff", fontSize: 15, fontWeight: "600" },
+    container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338", padding: 24 },
+    icon:      { fontSize: 56, marginBottom: 16 },
+    title:     { color: "#f2f3f5", fontSize: 20, fontWeight: "700", marginBottom: 8 },
+    subtitle:  { color: "#80848e", fontSize: 14, marginBottom: 32, textAlign: "center" },
+    btn:       { backgroundColor: "#5865f2", paddingHorizontal: 32, paddingVertical: 14, borderRadius: 8, width: "100%", alignItems: "center" },
+    btnText:   { color: "#fff", fontSize: 16, fontWeight: "600" },
   });
 
   async function handleUnlock() {
@@ -143,10 +187,10 @@ function LockScreen({ channelId, onUnlockCompleted }: any) {
     View, { style: styles.container },
     React.createElement(Text, { style: styles.icon }, "🔒"),
     React.createElement(Text, { style: styles.title }, "Channel locked"),
-    React.createElement(Text, { style: styles.subtitle }, "This channel is protected by ServerGuard."),
+    React.createElement(Text, { style: styles.subtitle }, "This chat room is restricted behind a ServerGuard security filter."),
     React.createElement(
       TouchableOpacity, { style: styles.btn, onPress: handleUnlock },
-      React.createElement(Text, { style: styles.btnText }, "Unlock")
+      React.createElement(Text, { style: styles.btnText }, "Tap to Unlock")
     )
   );
 }
