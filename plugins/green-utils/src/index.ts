@@ -5,7 +5,7 @@ import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
 import MessageHandlers from "./utils/MessageHandlersPatcher";
 
-const { Text, View, TouchableOpacity, StyleSheet, Alert } = ReactNative;
+const { Text, View, TouchableOpacity, StyleSheet, Alert, TextInput, Modal } = ReactNative;
 
 interface PluginStorage {
   imageBlockList: Record<string, boolean>;
@@ -27,7 +27,6 @@ const ThemeStore = findByStoreName("ThemeStore");
 
 // Discord Core Modules & View Components
 const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
-const alertModule = findByProps("showInputAlert");
 const RowManager = findByName("RowManager");
 const getEmbedThemeColors = findByName("getEmbedThemeColors");
 const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExtendedType ?? { EMBEDDED_ACTIVITY_INVITE: 3 };
@@ -35,6 +34,9 @@ const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExt
 const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
 const unlockedImagesForGuild = new Set<string>();
+
+// Dynamic trigger to invoke the custom alert overlay inside our global scope
+let triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {};
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -80,7 +82,6 @@ function makeRPL(attachment, shouldObscure: boolean) {
     splashUrl: null,
     noParticipantsText: displayFilename,
     ctaEnabled: true,
-    // Keep a secure backup of the original attachment data inside the layout item
     rawAttachment: attachment
   };
 }
@@ -88,41 +89,25 @@ function makeRPL(attachment, shouldObscure: boolean) {
 function handleInviteFileAction(args, originalFunction) {
   const guildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
   
+  let targetEventData = args?.[0]?.nativeEvent ?? args?.[0];
+  if (!targetEventData?.codedLink && args?.[1]?.codedLink) {
+    targetEventData = args[1];
+  }
+
   const executeOriginal = () => {
-    // Reconstruct attachment layout context if RowManager cleared it out
-    const nativeEvent = args[0]?.nativeEvent ?? args[0];
-    if (nativeEvent && !nativeEvent.message?.attachments?.length) {
-      const codedLink = nativeEvent.codedLink;
-      if (codedLink?.rawAttachment) {
-        nativeEvent.message ??= {};
-        nativeEvent.message.attachments = [codedLink.rawAttachment];
-      }
+    if (targetEventData && targetEventData.codedLink?.rawAttachment) {
+      targetEventData.message ??= {};
+      targetEventData.message.attachments = [targetEventData.codedLink.rawAttachment];
     }
     return originalFunction(...args);
   };
 
   if (guildId && pluginStorage.imageBlockList[guildId] && pluginStorage.imageLockRequirePassword && !unlockedImagesForGuild.has(guildId)) {
-    const storedHash = pluginStorage.serverPasswords[guildId];
-    const customAlert = alertModule?.showInputAlert;
-
-    if (storedHash && customAlert) {
-      customAlert({
-        title: "Images Locked",
-        placeholder: "Enter password to view...",
-        secureTextEntry: true,
-        confirmText: "Unlock",
-        cancelText: "Cancel",
-        onConfirm: (input: string) => {
-          if (simpleHash(input ?? "") === storedHash) {
-            unlockedImagesForGuild.add(guildId);
-            executeOriginal();
-          } else {
-            Alert.alert("Error", "Invalid Password");
-          }
-        }
-      });
-      return null;
-    }
+    // Invoke our own custom React dialog sequence instead of Discord's native alert method
+    triggerMediaPrompt(guildId, () => {
+      executeOriginal();
+    });
+    return null;
   }
 
   return executeOriginal();
@@ -165,6 +150,9 @@ function patchRowManager(): void {
   patches.push(unpatchRow);
 }
 
+let forceUpdateChat = () => {};
+
+// Global Layout Mount component to inject custom React dialog layers cleanly into the interface loop
 function initializeChannelLockPatch(): void {
   if (!ChannelView) return;
   const targetMethod = "ChannelChatWrapper" in ChannelView ? "ChannelChatWrapper" : "default";
@@ -172,6 +160,7 @@ function initializeChannelLockPatch(): void {
   const unpatchLock = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
     const currentGuildId = SelectedGuildStore?.getGuildId?.() || SelectedGuildStore?.getLastSelectedGuildId?.();
 
+    // 1. Handle Server Lock Gateway Screen
     if (currentGuildId && pluginStorage.serverLockList[currentGuildId] && !unlockedGuilds.has(currentGuildId)) {
       return React.createElement(LockScreen, {
         guildId: currentGuildId,
@@ -182,12 +171,80 @@ function initializeChannelLockPatch(): void {
       });
     }
 
-    return orig(...args);
+    // 2. Render normal layout chat viewport accompanied by our custom reactive password input dialog
+    return React.createElement(
+      React.Fragment,
+      null,
+      orig(...args),
+      React.createElement(CustomPromptDialog)
+    );
   });
   patches.push(unpatchLock);
 }
 
-let forceUpdateChat = () => {};
+function CustomPromptDialog() {
+  const [visible, setVisible] = React.useState(false);
+  const [password, setPassword] = React.useState("");
+  const currentTargetGid = React.useRef<string>("");
+  const successCallback = React.useRef<() => void>(() => {});
+
+  React.useEffect(() => {
+    triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {
+      currentTargetGid.current = guildId;
+      successCallback.current = onSuccess;
+      setPassword("");
+      setVisible(true);
+    };
+  }, []);
+
+  function handleSubmit() {
+    const storedHash = pluginStorage.serverPasswords[currentTargetGid.current];
+    if (simpleHash(password ?? "") === storedHash) {
+      unlockedImagesForGuild.add(currentTargetGid.current);
+      setVisible(false);
+      successCallback.current();
+      forceUpdateChat();
+    } else {
+      Alert.alert("Error", "Invalid Password");
+    }
+  }
+
+  const styles = StyleSheet.create({
+    centered:  { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.7)" },
+    modalBox:  { width: "85%", backgroundColor: "#313338", borderRadius: 12, padding: 20, alignItems: "center", borderWidth: 1, borderColor: "#4e5058" },
+    title:     { color: "#fff", fontSize: 18, fontWeight: "700", marginBottom: 12 },
+    input:     { width: "100%", backgroundColor: "#1e1f22", color: "#dbdee1", padding: 12, borderRadius: 6, marginBottom: 20, fontSize: 16, borderStyle: "solid", borderWidth: 1, borderColor: "#4e5058" },
+    row:       { flexDirection: "row", justifyContent: "flex-end", width: "100%" },
+    cancelBtn: { padding: 12, marginRight: 8 },
+    cancelTxt: { color: "#949ba4", fontSize: 16 },
+    submitBtn: { backgroundColor: "#5865f2", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 6 },
+    submitTxt: { color: "#fff", fontSize: 16, fontWeight: "600" }
+  });
+
+  return React.createElement(
+    Modal, { transparent: true, visible: visible, animationType: "fade", onRequestClose: () => setVisible(false) },
+    React.createElement(
+      View, { style: styles.centered },
+      React.createElement(
+        View, { style: styles.modalBox },
+        React.createElement(Text, { style: styles.title }, "Images Locked"),
+        React.createElement(TextInput, {
+          style: styles.input,
+          placeholder: "Enter password to view...",
+          placeholderTextColor: "#949ba4",
+          secureTextEntry: true,
+          value: password,
+          onChangeText: setPassword
+        }),
+        React.createElement(
+          View, { style: styles.row },
+          React.createElement(TouchableOpacity, { style: styles.cancelBtn, onPress: () => setVisible(false) }, React.createElement(Text, { style: styles.cancelTxt }, "Cancel")),
+          React.createElement(TouchableOpacity, { style: styles.submitBtn, onPress: handleSubmit }, React.createElement(Text, { style: styles.submitTxt }, "Unlock"))
+        )
+      )
+    )
+  );
+}
 
 function LockScreen({ guildId, onUnlockCompleted }: any) {
   const [, forceComponentUpdate] = React.useReducer((x) => x + 1, 0);
@@ -205,37 +262,18 @@ function LockScreen({ guildId, onUnlockCompleted }: any) {
     btnText:   { color: "#fff", fontSize: 16, fontWeight: "600" },
   });
 
-  function handleUnlock() {
-    const storedHash = pluginStorage.serverPasswords[guildId];
-    const alertPrompt = alertModule?.showInputAlert;
-    
-    if (alertPrompt) {
-      alertPrompt({
-        title: "Server Locked",
-        placeholder: "Enter password...",
-        secureTextEntry: true,
-        confirmText: "Unlock",
-        cancelText: "Cancel",
-        onConfirm: (input: string) => {
-          if (simpleHash(input ?? "") === storedHash) {
-            onUnlockCompleted();
-          } else {
-            Alert.alert("Error", "Invalid Password");
-          }
-        }
-      });
-    } else {
-      Alert.alert("Error", "Secure overlay module missing.");
-    }
-  }
-
   return React.createElement(
     View, { style: styles.container },
     React.createElement(Text, { style: styles.icon }, "🔒"),
     React.createElement(Text, { style: styles.title }, "Server Locked"),
     React.createElement(Text, { style: styles.subtitle }, "This server is locked behind a password."),
     React.createElement(
-      TouchableOpacity, { style: styles.btn, onPress: handleUnlock },
+      TouchableOpacity, {
+        style: styles.btn,
+        onPress: () => {
+          triggerMediaPrompt(guildId, onUnlockCompleted);
+        }
+      },
       React.createElement(Text, { style: styles.btnText }, "Enter Password")
     )
   );
