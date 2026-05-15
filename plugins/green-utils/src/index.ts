@@ -1,7 +1,6 @@
 import { instead } from "@vendetta/patcher";
 import { findByProps, findByStoreName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
-import { registerSettings } from "@vendetta/settings";
 import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
@@ -23,17 +22,6 @@ interface RenderAttachmentArgs {
   attachment: Attachment;
 }
 
-interface ControllerProps {
-  channelId: string;
-  origArgs: any[];
-  originalComponent: Function;
-}
-
-interface LockScreenProps {
-  channelId: string;
-  onUnlockCompleted: () => void;
-}
-
 // Cast storage to our typed interface safely
 const pluginStorage = storage as unknown as PluginStorage;
 
@@ -46,7 +34,7 @@ pluginStorage.channelLockList  ??= {};
 const GuildStore = findByStoreName("GuildStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const MediaComponent = findByProps("renderAttachment", "renderMedia");
-const ChannelView = findByProps("ChannelChatWrapper");
+const ChannelView = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 
 const patches: (() => void)[] = [];
 const unlockedChannels = new Set<string>();
@@ -64,7 +52,10 @@ function simpleHash(str: string): string {
 
 // ─── Feature 1: Image blocking per-server ────────────────────
 function patchImageBlocking(): void {
-  if (!MediaComponent) return;
+  if (!MediaComponent) {
+    console.warn("[ServerGuard] MediaComponent not found, skipping image blocking patch.");
+    return;
+  }
 
   const unpatch = instead("renderAttachment", MediaComponent, (args: [RenderAttachmentArgs], orig: Function) => {
     const { attachment } = args[0] ?? {};
@@ -119,7 +110,7 @@ async function promptForPassword(channelId: string): Promise<boolean> {
  * Stateful Controller Component (TypeScript)
  * Manages local re-renders to swap lock screens natively.
  */
-function ChannelLockController({ channelId, origArgs, originalComponent }: ControllerProps) {
+function ChannelLockController({ channelId, origArgs, originalComponent }: any) {
   const [isUnlocked, setIsUnlocked] = React.useState<boolean>(unlockedChannels.has(channelId));
   const isLockEnabled = pluginStorage.channelLockList[channelId];
 
@@ -133,7 +124,7 @@ function ChannelLockController({ channelId, origArgs, originalComponent }: Contr
   return originalComponent(...origArgs);
 }
 
-function LockScreen({ channelId, onUnlockCompleted }: LockScreenProps) {
+function LockScreen({ channelId, onUnlockCompleted }: any) {
   const styles = StyleSheet.create({
     container: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#313338" },
     icon:      { fontSize: 48, marginBottom: 12 },
@@ -161,36 +152,46 @@ function LockScreen({ channelId, onUnlockCompleted }: LockScreenProps) {
 }
 
 function patchChannelLock(): void {
-  if (!ChannelView) return;
+  if (!ChannelView) {
+    console.warn("[ServerGuard] ChannelView module not found, skipping channel lock patch.");
+    return;
+  }
 
-  const unpatch = instead("ChannelChatWrapper", ChannelView, (args: any[], orig: Function) => {
-    const channelId = ChannelStore?.getLastSelectedChannelId?.();
+  const targetMethod = findByProps("ChannelChatWrapper") ? "ChannelChatWrapper" : "default";
 
-    if (channelId && pluginStorage.channelLockList[channelId]) {
-      return React.createElement(ChannelLockController, {
-        channelId,
-        origArgs: args,
-        originalComponent: orig
-      });
-    }
+  try {
+    const unpatch = instead(targetMethod, ChannelView, (args: any[], orig: Function) => {
+      const channelId = ChannelStore?.getLastSelectedChannelId?.();
 
-    return orig(...args);
-  });
+      if (channelId && pluginStorage.channelLockList[channelId]) {
+        return React.createElement(ChannelLockController, {
+          channelId,
+          origArgs: args,
+          originalComponent: orig
+        });
+      }
 
-  patches.push(unpatch);
+      return orig(...args);
+    });
+
+    patches.push(unpatch);
+  } catch (err) {
+    console.error("[ServerGuard] Failed to patch ChannelView:", err);
+  }
 }
 
 // ─── Plugin lifecycle ─────────────────────────────────────────
 export default {
+  // Modern way to register your Settings view component safely 
+  settingsView: Settings,
+
   onLoad() {
     patchImageBlocking();
     patchChannelLock();
-    (this as any).settingsUnpatch = registerSettings("serverguard", Settings);
   },
 
   onUnload() {
     patches.forEach((p) => p());
     patches.length = 0;
-    (this as any).settingsUnpatch?.();
   },
 };
