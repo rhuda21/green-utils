@@ -50,8 +50,73 @@ const patches: (() => void)[] = [];
 const unlockedGuilds = new Set<string>();
 const unlockedImagesForGuild = new Set<string>();
 
+// Global modal state setter — gets assigned when the modal mounts
+let _showPrompt: (guildId: string, onSuccess: () => void) => void = (guildId) => {
+  webhookLog("_showPrompt called but not mounted yet", { guildId });
+};
+
+function GlobalPasswordModal() {
+  const [visible, setVisible] = React.useState(false);
+  const [password, setPassword] = React.useState("");
+  const guildIdRef = React.useRef("");
+  const callbackRef = React.useRef<() => void>(() => {});
+
+  React.useEffect(() => {
+    _showPrompt = (guildId, onSuccess) => {
+      guildIdRef.current = guildId;
+      callbackRef.current = onSuccess;
+      setPassword("");
+      setVisible(true);
+      webhookLog("_showPrompt triggered", { guildId });
+    };
+    webhookLog("GlobalPasswordModal mounted", {});
+  }, []);
+
+  function handleSubmit() {
+    const inputHash = simpleHash(password ?? "");
+    const storedHash = pluginStorage.serverPasswords[guildIdRef.current];
+    webhookLog("handleSubmit", { inputHash, storedHash, match: inputHash === storedHash });
+    if (inputHash === storedHash) {
+      unlockedImagesForGuild.add(guildIdRef.current);
+      setVisible(false);
+      callbackRef.current();
+    } else {
+      Alert.alert("Error", "Invalid Password");
+    }
+  }
+
+  return React.createElement(
+  Modal, { transparent: true, visible: visible, animationType: "fade", onRequestClose: () => setVisible(false) },
+  React.createElement(
+    View, { style: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 20 } },
+    React.createElement(
+      View, { style: { backgroundColor: "#313338", borderRadius: 16, padding: 20, width: "100%", maxWidth: 340, borderWidth: 1, borderColor: "#4e5058" } },
+      React.createElement(Text, { style: { color: "#f2f3f5", fontSize: 18, fontWeight: "700", marginBottom: 8 } }, "Images Locked"),
+      React.createElement(Text, { style: { color: "#949ba4", fontSize: 13, marginBottom: 16 } }, "Enter the server password to view."),
+      React.createElement(TextInput, {
+        style: { backgroundColor: "#1e1f22", borderRadius: 8, padding: 12, color: "#f2f3f5", fontSize: 15, borderWidth: 1, borderColor: "#4e5058", marginBottom: 20 },
+        placeholder: "Password...",
+        placeholderTextColor: "#80848e",
+        secureTextEntry: true,
+        value: password,
+        onChangeText: setPassword
+      }),
+      React.createElement(
+        View, { style: { flexDirection: "row", justifyContent: "flex-end", gap: 12 } },
+        React.createElement(TouchableOpacity, { onPress: () => setVisible(false), style: { paddingVertical: 10, paddingHorizontal: 16 } },
+          React.createElement(Text, { style: { color: "#f2f3f5", fontSize: 14 } }, "Cancel")
+        ),
+        React.createElement(TouchableOpacity, { onPress: handleSubmit, style: { backgroundColor: "#5865f2", paddingVertical: 10, paddingHorizontal: 16, borderRadius: 6 } },
+          React.createElement(Text, { style: { color: "#fff", fontSize: 14, fontWeight: "600" } }, "Unlock")
+        )
+      )
+    )
+  )
+);
+}
+
 let triggerMediaPrompt = (guildId: string, onSuccess: () => void) => {
-  webhookLog("triggerMediaPrompt called but still NO-OP", { guildId });
+  _showPrompt(guildId, onSuccess);
 };
 
 function simpleHash(str: string): string {
