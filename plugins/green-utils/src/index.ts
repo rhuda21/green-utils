@@ -301,16 +301,9 @@ function patchMessageContent(): void {
       if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
 
       const needsPassword = pluginStorage.imageLockRequirePassword;
-      const isUnlocked    = needsPassword && unlockedImagesForGuild.has(guildId);
+      const isUnlocked    = !needsPassword || unlockedImagesForGuild.has(guildId);
 
       if (isUnlocked) return;
-
-      // Cache attachments before hiding so we can open them after unlock
-      if (content.message.attachments?.length) {
-        if (!attachmentCache.has(content.message.id)) {
-          attachmentCache.set(content.message.id, [...content.message.attachments]);
-        }
-      }
 
       // Hide attachments and embeds
       content.options.inlineAttachmentMedia = false;
