@@ -277,7 +277,6 @@ function patchMessageContent(): void {
     found: !!mod,
     keys: mod ? Object.keys(mod) : null,
     fnType: typeof mod?.createMessageContent,
-    defaultType: typeof mod?.default,
   });
 
   if (!mod || typeof mod.createMessageContent !== "function") return;
@@ -349,15 +348,13 @@ export default {
   settings: Settings,
 
   onLoad() {
-    setTimeout(() => {
-      try {
-        patchMessageHandlers();
-        patchMessageContent();
-        patchChannelView();
-      } catch (e) {
-        console.error("[green-utils] onLoad error:", e);
-      }
-    }, 1000);
+    try {
+      patchMessageHandlers();
+      patchMessageContent();
+      patchChannelView();
+    } catch (e) {
+      console.error("[green-utils] onLoad error:", e);
+    }
   },
 
   onUnload() {
