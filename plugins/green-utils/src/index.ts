@@ -276,6 +276,7 @@ function patchRowManager(): void {
   patches.push(
     after("generate", RowManager.prototype, (_, row) => {
       const { message } = row;
+      if (!message || !message.channel_id) return;
 
       const channel = ChannelStore?.getChannel?.(message.channel_id);
       const guildId = channel?.guild_id;
