@@ -1,4 +1,4 @@
-import { instead, after } from "@vendetta/patcher";
+import { instead, before } from "@vendetta/patcher";
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
@@ -30,7 +30,6 @@ const ChannelStore         = findByStoreName("ChannelStore");
 const FluxDispatcher       = findByProps("dispatch", "subscribe");
 const ThemeStore           = findByStoreName("ThemeStore");
 const ChannelView          = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
-const RowManager           = findByName("RowManager");
 const getEmbedThemeColors  = findByName("getEmbedThemeColors");
 const modals                = findByProps("pushModal");
 const Navigation            = findByProps("pushModal", "popModal");
@@ -270,15 +269,16 @@ function patchMessageHandlers(): void {
   );
 }
 
-function patchRowManager(): void {
-  if (!RowManager?.prototype) return;
+function patchMessageContent(): void {
+  const createMessageContent = findByProps("createMessageContent");
+  if (!createMessageContent) return;
 
   patches.push(
-    after("generate", RowManager.prototype, (_, row) => {
-      const { message } = row;
-      if (!message || !message.channel_id) return;
+    before("default", createMessageContent, (args: any[]) => {
+      const content = args[0];
+      if (!content?.message?.channel_id || !content?.options) return;
 
-      const channel = ChannelStore?.getChannel?.(message.channel_id);
+      const channel = ChannelStore?.getChannel?.(content.message.channel_id);
       const guildId = channel?.guild_id;
 
       if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
@@ -286,29 +286,31 @@ function patchRowManager(): void {
       const needsPassword = pluginStorage.imageLockRequirePassword;
       const isUnlocked    = needsPassword && unlockedImagesForGuild.has(guildId);
 
-      if (isUnlocked) {
-        // Restore cached attachments and strip our injected RPLs
-        const cached = attachmentCache.get(message.id);
-        if (cached) {
-          message.attachments = cached;
-          message.codedLinks  = (message.codedLinks ?? []).filter(
-            (cl: any) => !cl.rawAttachment
-          );
+      if (isUnlocked) return;
+
+      // Cache attachments before hiding so we can open them after unlock
+      if (content.message.attachments?.length) {
+        if (!attachmentCache.has(content.message.id)) {
+          attachmentCache.set(content.message.id, [...content.message.attachments]);
         }
-        return;
       }
 
-      if (!message?.attachments?.length) return;
+      // Hide attachments and embeds
+      content.options.inlineAttachmentMedia = false;
+      content.options.inlineEmbedMedia      = false;
+      content.options.renderAttachments     = false;
 
-      // Cache before wiping so we can restore after unlock
-      if (!attachmentCache.has(message.id)) {
-        attachmentCache.set(message.id, [...message.attachments]);
+      // Inject RPL coded links so the "Unlock View" button appears
+      if (content.message.attachments?.length) {
+        const rpls = content.message.attachments.map(
+          (att: any) => makeRPL(att, true)
+        );
+        content.message.codedLinks = [
+          ...(content.message.codedLinks ?? []),
+          ...rpls,
+        ];
+        content.message.attachments = [];
       }
-
-      const shouldObscure = !needsPassword || !unlockedImagesForGuild.has(guildId);
-      const rpls = message.attachments.map((att: any) => makeRPL(att, shouldObscure));
-      message.codedLinks  = [...(message.codedLinks ?? []), ...rpls];
-      message.attachments = [];
     })
   );
 }
@@ -344,7 +346,7 @@ export default {
     setTimeout(() => {
       try {
         patchMessageHandlers();
-        patchRowManager();
+        patchMessageContent();
         patchChannelView();
       } catch (e) {
         console.error("[green-utils] onLoad error:", e);
