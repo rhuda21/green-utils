@@ -291,10 +291,11 @@ function patchMessageContent(): void {
 
   webhookLog("createMessageContent module", {
     found: !!createMessageContent,
+    defaultType: typeof createMessageContent?.default,
     keys: createMessageContent ? Object.keys(createMessageContent) : null,
   });
 
-  if (!createMessageContent) return;
+  if (!createMessageContent || typeof createMessageContent.default !== "function") return;
 
   patches.push(
     before("default", createMessageContent, (args: any[]) => {
