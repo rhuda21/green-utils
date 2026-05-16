@@ -26,6 +26,8 @@ pluginStorage.imageLockRequirePassword ??= false;
 
 const SelectedGuildStore   = findByStoreName("SelectedGuildStore") || findByProps("getGuildId", "getLastSelectedGuildId");
 const SelectedChannelStore = findByStoreName("SelectedChannelStore");
+const ChannelStore         = findByStoreName("ChannelStore");
+const FluxDispatcher       = findByProps("dispatch", "subscribe");
 const ThemeStore           = findByStoreName("ThemeStore");
 const ChannelView          = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const RowManager           = findByName("RowManager");
@@ -191,6 +193,7 @@ function LockScreen({ guildId, onUnlockCompleted }: { guildId: string; onUnlockC
 function handleInviteFileAction(args: any[], originalFunction: Function) {
   const guildId = getGuildId();
   const nativeEvent = args?.[0]?.nativeEvent ?? args?.[0];
+  const messageId   = nativeEvent?.messageId;
 
   const shouldPrompt =
     !!guildId &&
@@ -200,19 +203,11 @@ function handleInviteFileAction(args: any[], originalFunction: Function) {
 
   if (shouldPrompt) {
     showPasswordPrompt(guildId!, () => {
-      // Force Discord to re-render the message list so RowManager
-      // runs again — this time unlockedImagesForGuild has the guild
-      // so attachments render normally instead of as RPLs
-      const FluxDispatcher = findByProps("dispatch", "subscribe");
-      FluxDispatcher?.dispatch({ type: "INVALIDATE_ROWS" });
-
-      // Fallback: try dispatching a channel select to force a full re-render
+      // Force message list to re-render so RowManager runs again
+      // with unlockedImagesForGuild populated — attachments show normally
       const channelId = SelectedChannelStore?.getChannelId?.();
       if (channelId) {
-        FluxDispatcher?.dispatch({
-          type: "CHANNEL_SELECT",
-          channelId,
-        });
+        FluxDispatcher?.dispatch({ type: "CHANNEL_SELECT", channelId });
       }
     });
     return null;
@@ -245,18 +240,13 @@ function patchRowManager(): void {
       const { message } = row;
       if (!message?.attachments?.length) return;
 
-      // Use the guildId from the channel the message belongs to, not the selected guild
-      const ChannelStore = findByStoreName("ChannelStore");
-      const channel = ChannelStore?.getChannel?.(message.channel_id);
-      const guildId = channel?.guild_id;
-
-      // Only obscure if this message actually belongs to a blocked guild
-      if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
-
+      const guildId = getGuildId();
       const shouldObscure =
-        !pluginStorage.imageLockRequirePassword ||
-        !unlockedImagesForGuild.has(guildId);
+        !!guildId &&
+        !!pluginStorage.imageBlockList[guildId] &&
+        (!pluginStorage.imageLockRequirePassword || !unlockedImagesForGuild.has(guildId));
 
+      // Cache attachments by messageId for post-unlock re-render
       message.attachments.forEach((att: any) => {
         attachmentCache.set(message.id, att);
       });
