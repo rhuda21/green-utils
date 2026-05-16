@@ -316,16 +316,14 @@ function patchMessageContent(): void {
       content.options.inlineAttachmentMedia = false;
       content.options.inlineEmbedMedia      = false;
       content.options.renderAttachments     = false;
+      content.options.renderEmbeds          = false;
 
-      // Inject RPL coded links so the "Unlock View" button appears
+      // Cache attachments before hiding so we can open them after unlock
       if (content.message.attachments?.length) {
-        const rpls = content.message.attachments.map(
-          (att: any) => makeRPL(att, true)
-        );
-        content.message.codedLinks = [
-          ...(content.message.codedLinks ?? []),
-          ...rpls,
-        ];
+        if (!attachmentCache.has(content.message.id)) {
+          attachmentCache.set(content.message.id, [...content.message.attachments]);
+        }
+        // Clear attachments so nothing renders
         content.message.attachments = [];
       }
     })
