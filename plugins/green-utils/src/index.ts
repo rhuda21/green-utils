@@ -270,7 +270,24 @@ function patchMessageHandlers(): void {
 }
 
 function patchMessageContent(): void {
-  const createMessageContent = findByName("createMessageContent", false);
+  // findByName doesn't find this since it's a default export only
+  // so we find it by looking for a module whose default export is named createMessageContent
+  const createMessageContent = findByProps("createMessageContent") 
+    ?? findByName("createMessageContent", false)
+    ?? (() => {
+      // fallback: search manually
+      const metroModules = (globalThis as any).__modules || (globalThis as any).modules;
+      if (!metroModules) return null;
+      for (const id of Object.keys(metroModules)) {
+        try {
+          const m = metroModules[id];
+          const exp = (m?.publicModule?.exports) || m?.exports;
+          if (exp?.default?.name === "createMessageContent") return exp;
+        } catch (_) {}
+      }
+      return null;
+    })();
+
   if (!createMessageContent) return;
 
   patches.push(
