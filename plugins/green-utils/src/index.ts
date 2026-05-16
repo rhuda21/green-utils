@@ -32,7 +32,9 @@ const ThemeStore           = findByStoreName("ThemeStore");
 const ChannelView          = findByProps("ChannelChatWrapper") || findByProps("ChannelChat");
 const RowManager           = findByName("RowManager");
 const getEmbedThemeColors  = findByName("getEmbedThemeColors");
-const modals               = findByProps("pushModal");
+const modals                = findByProps("pushModal");
+const Navigation            = findByProps("pushModal", "popModal");
+const MediaModal            = findByName("MediaModal");
 const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExtendedType ?? { EMBEDDED_ACTIVITY_INVITE: 3 };
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -40,7 +42,7 @@ const CodedLinkExtendedType = findByProps("CodedLinkExtendedType")?.CodedLinkExt
 const patches: (() => void)[]      = [];
 const unlockedGuilds               = new Set<string>();
 const unlockedImagesForGuild       = new Set<string>();
-const attachmentCache              = new Map<string, any>(); // messageId -> original attachment
+const attachmentCache              = new Map<string, any[]>(); // messageId -> original attachments
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +72,36 @@ function getCodedLinkColors() {
     backgroundColor:            colors.backgroundColor,
   };
 }
+
+function openAttachment(attachment: any) {
+  Navigation.pushModal({
+    key: "media-modal-key",
+    modal: {
+      key:                      "media-modal-key",
+      modal:                    MediaModal,
+      animation:                "slide-up",
+      shouldPersistUnderModals: false,
+      props: {
+        disableDownload: false,
+        initialIndex:    0,
+        sources: [{
+          uri:    attachment.url,
+          width:  attachment.width  ?? 500,
+          height: attachment.height ?? 500,
+        }],
+        originLayout: { x: 0, y: 0, width: 300, height: 300, resizeMode: "cover" },
+      },
+      backdropStyle:    null,
+      backdropInstant:  false,
+      disableAnimation: false,
+      closable:         true,
+      label:            "",
+      callbacks:        {},
+    },
+    animation: "none",
+  });
+}
+
 
 function makeRPL(attachment: any, shouldObscure: boolean) {
   return {
@@ -191,7 +223,7 @@ function LockScreen({ guildId, onUnlockCompleted }: { guildId: string; onUnlockC
 // ─── Tap Handler ─────────────────────────────────────────────────────────────
 
 function handleInviteFileAction(args: any[], originalFunction: Function) {
-  const guildId = getGuildId();
+  const guildId     = getGuildId();
   const nativeEvent = args?.[0]?.nativeEvent ?? args?.[0];
   const messageId   = nativeEvent?.messageId;
 
@@ -203,13 +235,19 @@ function handleInviteFileAction(args: any[], originalFunction: Function) {
 
   if (shouldPrompt) {
     showPasswordPrompt(guildId!, () => {
-      // Force message list to re-render so RowManager runs again
-      // with unlockedImagesForGuild populated — attachments show normally
+      unlockedImagesForGuild.add(guildId!);
       const channelId = SelectedChannelStore?.getChannelId?.();
       if (channelId) {
         FluxDispatcher?.dispatch({ type: "CHANNEL_SELECT", channelId });
       }
     });
+    return null;
+  }
+
+  // Unlocked or no password required — open attachment directly from cache
+  const cached = attachmentCache.get(messageId);
+  if (cached?.[0]) {
+    openAttachment(cached[0]);
     return null;
   }
 
@@ -238,25 +276,38 @@ function patchRowManager(): void {
   patches.push(
     after("generate", RowManager.prototype, (_, row) => {
       const { message } = row;
+
+      const channel = ChannelStore?.getChannel?.(message.channel_id);
+      const guildId = channel?.guild_id;
+
+      if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
+
+      const isUnlocked =
+        !pluginStorage.imageLockRequirePassword ||
+        unlockedImagesForGuild.has(guildId);
+
+      if (isUnlocked) {
+        // Restore cached attachments and strip our injected RPLs
+        const cached = attachmentCache.get(message.id);
+        if (cached) {
+          message.attachments = cached;
+          message.codedLinks  = (message.codedLinks ?? []).filter(
+            (cl: any) => !cl.rawAttachment
+          );
+        }
+        return;
+      }
+
       if (!message?.attachments?.length) return;
 
-      const guildId = getGuildId();
-      const shouldObscure =
-        !!guildId &&
-        !!pluginStorage.imageBlockList[guildId] &&
-        (!pluginStorage.imageLockRequirePassword || !unlockedImagesForGuild.has(guildId));
-
-      // Cache attachments by messageId for post-unlock re-render
-      message.attachments.forEach((att: any) => {
-        attachmentCache.set(message.id, att);
-      });
-
-      const rpls = message.attachments.map((att: any) => makeRPL(att, shouldObscure));
-
-      if (rpls.length) {
-        message.codedLinks = [...(message.codedLinks ?? []), ...rpls];
-        message.attachments = [];
+      // Cache before wiping so we can restore after unlock
+      if (!attachmentCache.has(message.id)) {
+        attachmentCache.set(message.id, [...message.attachments]);
       }
+
+      const rpls = message.attachments.map((att: any) => makeRPL(att, true));
+      message.codedLinks  = [...(message.codedLinks ?? []), ...rpls];
+      message.attachments = [];
     })
   );
 }
