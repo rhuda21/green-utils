@@ -283,9 +283,8 @@ function patchRowManager(): void {
 
       if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
 
-      const isUnlocked =
-        !pluginStorage.imageLockRequirePassword ||
-        unlockedImagesForGuild.has(guildId);
+      const needsPassword = pluginStorage.imageLockRequirePassword;
+      const isUnlocked    = needsPassword && unlockedImagesForGuild.has(guildId);
 
       if (isUnlocked) {
         // Restore cached attachments and strip our injected RPLs
@@ -306,7 +305,8 @@ function patchRowManager(): void {
         attachmentCache.set(message.id, [...message.attachments]);
       }
 
-      const rpls = message.attachments.map((att: any) => makeRPL(att, true));
+      const shouldObscure = !needsPassword || !unlockedImagesForGuild.has(guildId);
+      const rpls = message.attachments.map((att: any) => makeRPL(att, shouldObscure));
       message.codedLinks  = [...(message.codedLinks ?? []), ...rpls];
       message.attachments = [];
     })
