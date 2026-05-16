@@ -271,18 +271,30 @@ function patchMessageHandlers(): void {
 }
 
 function patchMessageContent(): void {
-  const mod = findByProps("createMessageContent");
+  const mods = (globalThis as any).__modules || (globalThis as any).modules;
+  if (!mods) return;
+
+  let mod: any = null;
+  for (const id of Object.keys(mods)) {
+    try {
+      const m = mods[id];
+      const exp = m?.publicModule?.exports ?? m?.exports;
+      if (exp?.__esModule && typeof exp?.default === "function" && exp.default.name === "createMessageContent") {
+        mod = exp;
+        break;
+      }
+    } catch (_) {}
+  }
 
   webhookLog("createMessageContent module", {
     found: !!mod,
-    keys: mod ? Object.keys(mod) : null,
-    fnType: typeof mod?.createMessageContent,
+    fnType: typeof mod?.default,
   });
 
-  if (!mod || typeof mod.createMessageContent !== "function") return;
+  if (!mod) return;
 
   patches.push(
-    before("createMessageContent", mod, (args: any[]) => {
+    before("default", mod, (args: any[]) => {
       const content = args[0];
       if (!content?.message?.channel_id || !content?.options) return;
 
