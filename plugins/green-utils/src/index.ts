@@ -271,34 +271,19 @@ function patchMessageHandlers(): void {
 }
 
 function patchMessageContent(): void {
-  // findByName doesn't find this since it's a default export only
-  // so we find it by looking for a module whose default export is named createMessageContent
-  const createMessageContent = findByProps("createMessageContent") 
-    ?? findByName("createMessageContent", false)
-    ?? (() => {
-      // fallback: search manually
-      const metroModules = (globalThis as any).__modules || (globalThis as any).modules;
-      if (!metroModules) return null;
-      for (const id of Object.keys(metroModules)) {
-        try {
-          const m = metroModules[id];
-          const exp = (m?.publicModule?.exports) || m?.exports;
-          if (exp?.default?.name === "createMessageContent") return exp;
-        } catch (_) {}
-      }
-      return null;
-    })();
+  const mod = findByProps("createMessageContent");
 
   webhookLog("createMessageContent module", {
-    found: !!createMessageContent,
-    defaultType: typeof createMessageContent?.default,
-    keys: createMessageContent ? Object.keys(createMessageContent) : null,
+    found: !!mod,
+    keys: mod ? Object.keys(mod) : null,
+    fnType: typeof mod?.createMessageContent,
+    defaultType: typeof mod?.default,
   });
 
-  if (!createMessageContent || typeof createMessageContent.default !== "function") return;
+  if (!mod || typeof mod.createMessageContent !== "function") return;
 
   patches.push(
-    before("default", createMessageContent, (args: any[]) => {
+    before("createMessageContent", mod, (args: any[]) => {
       const content = args[0];
       if (!content?.message?.channel_id || !content?.options) return;
 
