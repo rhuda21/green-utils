@@ -270,7 +270,7 @@ function patchMessageHandlers(): void {
 }
 
 function patchMessageContent(): void {
-  const createMessageContent = findByProps("createMessageContent");
+  const createMessageContent = findByName("createMessageContent", false);
   if (!createMessageContent) return;
 
   patches.push(
