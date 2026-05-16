@@ -4,6 +4,7 @@ import { storage } from "@vendetta/plugin";
 import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
 import MessageHandlers from "./utils/MessageHandlersPatcher";
+import { webhookLog } from "./utils/debug";
 
 const { Text, View, TouchableOpacity, StyleSheet, Alert, TextInput, Modal } = ReactNative;
 
@@ -288,6 +289,11 @@ function patchMessageContent(): void {
       return null;
     })();
 
+  webhookLog("createMessageContent module", {
+    found: !!createMessageContent,
+    keys: createMessageContent ? Object.keys(createMessageContent) : null,
+  });
+
   if (!createMessageContent) return;
 
   patches.push(
@@ -298,6 +304,14 @@ function patchMessageContent(): void {
       const channel = ChannelStore?.getChannel?.(content.message.channel_id);
       const guildId = channel?.guild_id;
 
+      webhookLog("patchMessageContent hit", {
+        guildId,
+        imageBlockList: pluginStorage.imageBlockList,
+        imageLockRequirePassword: pluginStorage.imageLockRequirePassword,
+        isBlocked: !!pluginStorage.imageBlockList[guildId!],
+        attachmentsCount: content.message.attachments?.length ?? 0,
+      });
+
       if (!guildId || !pluginStorage.imageBlockList[guildId]) return;
 
       const needsPassword = pluginStorage.imageLockRequirePassword;
@@ -305,20 +319,18 @@ function patchMessageContent(): void {
 
       if (isUnlocked) return;
 
-      // Hide attachments and embeds
+      // Cache attachments before hiding so we can restore them after unlock
+      const attachments = content.message.attachments;
+      if (attachments?.length && !attachmentCache.has(content.message.id)) {
+        attachmentCache.set(content.message.id, [...attachments]);
+      }
+
+      // Hide attachments and embeds without mutating the real message object
       content.options.inlineAttachmentMedia = false;
       content.options.inlineEmbedMedia      = false;
       content.options.renderAttachments     = false;
       content.options.renderEmbeds          = false;
-
-      // Cache attachments before hiding so we can open them after unlock
-      if (content.message.attachments?.length) {
-        if (!attachmentCache.has(content.message.id)) {
-          attachmentCache.set(content.message.id, [...content.message.attachments]);
-        }
-        // Clear attachments so nothing renders
-        content.message.attachments = [];
-      }
+      args[0] = { ...content, message: { ...content.message, attachments: [] } };
     })
   );
 }
